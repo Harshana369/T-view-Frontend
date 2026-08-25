@@ -152,3 +152,17 @@ export function subscribeCandles(
     clearInterval(timer);
   };
 }
+
+/**
+ * පැය 24කට කලින් තිබුණු price එක ගේනවා — watchlist එකේ % change එක
+ * ගණන් හදන්න ඕන baseline එක මේක. පැය 1 candles 25ක් ගෙනල්ලා, දැනට
+ * පැය 24කට කලින් වහපු/ඇරපු candle එකේ open price එක ගන්නවා.
+ */
+export async function fetchPrice24hAgo(symbol: string): Promise<number | null> {
+  const hourly: Timeframe = { code: '1h', label: '1H', granularity: 'ONE_HOUR', seconds: 3600 };
+  const bars = await fetchCandlePage(symbol, hourly, Date.now(), 25);
+  if (bars.length === 0) return null;
+  const targetSec = (Date.now() - 24 * 3600 * 1000) / 1000;
+  const bar = bars.find((b) => b.time >= targetSec) ?? bars[0];
+  return bar.open;
+}

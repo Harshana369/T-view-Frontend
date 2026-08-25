@@ -16,8 +16,12 @@ interface AppState {
   symbol: string;
   interval: Interval;
   indicators: ActiveIndicator[];
+  /** Watchlist panel එකේ පේළි — Coinbase symbol ටික, පෙන්නන පිළිවෙලට. */
+  watchlist: string[];
   setSymbol: (symbol: string) => void;
   setInterval: (interval: Interval) => void;
+  addToWatchlist: (symbol: string) => void;
+  removeFromWatchlist: (symbol: string) => void;
   addIndicator: (defId: string) => void;
   removeIndicator: (instanceId: string) => void;
   setParam: (instanceId: string, key: string, value: number) => void;
@@ -31,9 +35,17 @@ export const useStore = create<AppState>()(
       symbol: 'BTC-PERP',
       interval: '15m',
       indicators: [],
+      watchlist: ['BTC-PERP', 'ETH-PERP', 'BNB-PERP', 'SOL-PERP', 'XRP-PERP'],
 
       setSymbol: (symbol) => set({ symbol }),
       setInterval: (interval) => set({ interval }),
+
+      /** දැනටමත් list එකේ තියෙනවා නම් දෙපාරක් දාන්නේ නෑ. */
+      addToWatchlist: (symbol) =>
+        set((s) => (s.watchlist.includes(symbol) ? s : { watchlist: [...s.watchlist, symbol] })),
+
+      removeFromWatchlist: (symbol) =>
+        set((s) => ({ watchlist: s.watchlist.filter((w) => w !== symbol) })),
 
       /** Registry එකේ default params එක්ක අලුත් indicator instance එකක් දානවා. */
       addIndicator: (defId) =>

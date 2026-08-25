@@ -3,11 +3,13 @@ import { Chart } from './components/Chart';
 import { IndicatorMenu } from './components/IndicatorMenu';
 import { SymbolPicker } from './components/SymbolPicker';
 import { TimeframeBar } from './components/TimeframeBar';
+import { Watchlist } from './components/Watchlist';
 import { useStore } from './store';
 
 /**
  * මුළු app එකේ layout එක: උඩින් toolbar එක (coin picker, timeframe, indicators),
- * යටින් chart එක. දේවල් තුනම store එකේ තියෙනවා, Chart එක ඒවා බලාගෙන අඳිනවා.
+ * යටින් chart එකයි දකුණු පැත්තේ watchlist එකයි. දේවල් ඔක්කොම store එකේ
+ * තියෙනවා, Chart එක ඒවා බලාගෙන අඳිනවා.
  */
 export default function App() {
   const symbol = useStore((s) => s.symbol);
@@ -33,14 +35,17 @@ export default function App() {
         </div>
       </header>
 
-      <main className="chart-wrap">
-        <Chart
-          symbol={symbol}
-          interval={interval}
-          onPrice={setPrice}
-          onLoading={setLoading}
-          onError={setError}
-        />
+      <main className="body">
+        <div className="chart-wrap">
+          <Chart
+            symbol={symbol}
+            interval={interval}
+            onPrice={setPrice}
+            onLoading={setLoading}
+            onError={setError}
+          />
+        </div>
+        <Watchlist />
       </main>
     </div>
   );
