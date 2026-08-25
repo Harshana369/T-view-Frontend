@@ -1,8 +1,10 @@
 import type { UTCTimestamp } from 'lightweight-charts';
+import type { BandPoint } from './bandFill';
 import { atrArray, bollinger, emaArray, macd, rsiArray, smaArray, vwapArray } from './indicators';
 import { computeMadLoop, type SignalMode } from './madLoop';
 import { MA_TYPES } from './movingAverages';
-import type { Candle } from './types';
+import { alignHigherTimeframe, computeSniper, rsiOfPreviousClose } from './sniper';
+import type { Candle, Interval } from './types';
 
 export interface LinePoint {
   time: UTCTimestamp;
@@ -35,12 +37,57 @@ export interface IndicatorMarker {
   text?: string;
 }
 
+/** Candle එකකට දාන පාට — දුන්නේ නැති කොටස් default පාටෙන්ම යනවා. */
+export interface IndicatorBarColor {
+  body: string;
+  wick?: string;
+  /** Outline එක — දුන්නේ නැත්නම් bar එකේ හැබෑ කොළ/රතු පාට එහෙම්මම. */
+  border?: string;
+}
+
+/** රේඛා දෙකක් අතර පාට කරන කලාපයක් (Pine `fill()`). */
+export interface IndicatorBand {
+  key: string;
+  points: BandPoint[];
+}
+
+/** Dashboard table එකේ එක පේළියක් (Pine `table.cell`). */
+export interface IndicatorPanelRow {
+  label: string;
+  value: string;
+  labelColor?: string;
+  labelBackground?: string;
+  valueColor?: string;
+  valueBackground?: string;
+}
+
+/** Chart එක උඩම පාවෙන පොඩි table එකක් (Pine `table.new`). */
+export interface IndicatorPanel {
+  position:
+    | 'Top Left'
+    | 'Top Right'
+    | 'Middle Left'
+    | 'Middle Right'
+    | 'Bottom Left'
+    | 'Bottom Right';
+  background?: string;
+  rows: IndicatorPanelRow[];
+}
+
 /** Indicator එකක් chart එකට දෙන දේවල් ඔක්කොම. */
 export interface IndicatorOutput {
   series: IndicatorSeries[];
-  /** Candles වලට දාන පාට (index = candle index; `undefined` = default පාට). */
-  barColors?: (string | undefined)[];
+  /** Candles වලට දාන පාට (index = candle index). */
+  barColors?: (IndicatorBarColor | undefined)[];
   markers?: IndicatorMarker[];
+  bands?: IndicatorBand[];
+  panel?: IndicatorPanel;
+}
+
+/** compute() එකට යන අමතර data — දැනට උසස් timeframe candles විතරයි. */
+export interface IndicatorContext {
+  /** Interval code එකෙන් — උදා: `mtf['5m']`. */
+  mtf: Record<string, Candle[]>;
 }
 
 export type ParamValue = number | string;
@@ -68,8 +115,10 @@ export interface IndicatorDef {
   params: ParamDef[];
   /** Separate pane එකේ අඳින reference lines (උදා: RSI 30/70). */
   levels?: number[];
+  /** මේ indicator එකට උසස් timeframe candles ඕන නම් ඒකේ code එක. */
+  mtf?: Interval;
   /** Candles + params වලින් අඳින්න ඕන දේවල් හදනවා. */
-  compute: (candles: Candle[], p: Params) => IndicatorOutput;
+  compute: (candles: Candle[], p: Params, ctx: IndicatorContext) => IndicatorOutput;
 }
 
 /** Param එකක් number එකක් විදිහට කියවනවා. */
@@ -131,6 +180,16 @@ const PALETTES: Record<string, { up: string; down: string }> = {
 };
 
 const NEUTRAL = '#787b86';
+
+/** Pine එකේ built-in colors (color.green, color.red ...) — TradingView අගයන්ම. */
+const TV = {
+  green: '#4CAF50',
+  red: '#FF5252',
+  blue: '#2196F3',
+  orange: '#FF9800',
+  black: '#000000',
+  gray: '#787B86',
+};
 
 export const INDICATORS: IndicatorDef[] = [
   {
@@ -442,9 +501,176 @@ export const INDICATORS: IndicatorDef[] = [
             lineWidth: 2,
           },
         ],
-        // Pine `barcolor()` / `plotcandle()` — candles ටිකත් score එකේ පාටට.
-        barColors: r.score.map((s) => (s === 1 ? up : s === -1 ? down : NEUTRAL)),
+        // Pine `barcolor()` / `plotcandle()` — candles ටිකත් score එකේ පාටට
+        // (body, wick, outline තුනම).
+        barColors: r.score.map((s) => {
+          const c = s === 1 ? up : s === -1 ? down : NEUTRAL;
+          return { body: c, wick: c, border: c };
+        }),
         markers,
+      };
+    },
+  },
+  {
+    // Sniper Entry/Exit with SL&TP by KhanSaab V.02 (community version) එකේ port එක.
+    id: 'sniper',
+    name: 'Sniper V.02 | KhanSaab',
+    pane: 'main',
+    mtf: '5m',
+    params: [
+      { key: 'fast', label: 'Fast EMA', default: 9, min: 2, max: 200 },
+      { key: 'mid', label: 'Mid EMA', default: 21, min: 2, max: 200 },
+      { key: 'slow', label: 'Slow EMA', default: 50, min: 2, max: 400 },
+      { key: 'ribbon', label: 'Ribbon %', default: 50, min: 0, max: 100 },
+      {
+        key: 'dashboard',
+        label: 'Dashboard',
+        kind: 'select',
+        default: 'Top Right',
+        options: ['Top Right', 'Top Left', 'Middle Right', 'Middle Left', 'Bottom Right', 'Bottom Left', 'Off'],
+      },
+    ],
+    compute: (candles, p, ctx) => {
+      // පැය/විනාඩි 5 RSI එක — Chart එක ගෙනල්ලා දෙන 5m candles වලින්.
+      const htf = ctx.mtf['5m'] ?? [];
+      const rsiHigherTf = alignHigherTimeframe(candles, htf, rsiOfPreviousClose(htf, 14));
+
+      const r = computeSniper(candles, {
+        fast: num(p, 'fast', 9),
+        mid: num(p, 'mid', 21),
+        slow: num(p, 'slow', 50),
+        rsiHigherTf,
+      });
+
+      const ribbonAlpha = num(p, 'ribbon', 50);
+      const last = candles.length - 1;
+      const dashPos = str(p, 'dashboard', 'Top Right');
+
+      // VWAP එකේ පාට price එක උඩද යටද කියලා මාරු වෙනවා.
+      const vwapColors = candles.map((c, i) => (c.close > r.vwap[i] ? TV.green : TV.red));
+
+      // EMA ribbon එක — fast/mid අතර කලාපය.
+      const bandPoints: BandPoint[] = [];
+      for (let i = 0; i < candles.length; i++) {
+        if (Number.isNaN(r.emaFast[i]) || Number.isNaN(r.emaMid[i])) continue;
+        bandPoints.push({
+          time: candles[i].time,
+          upper: r.emaFast[i],
+          lower: r.emaMid[i],
+          color: withAlpha(r.emaFast[i] > r.emaMid[i] ? TV.green : TV.red, 100 - ribbonAlpha),
+        });
+      }
+
+      const markers: IndicatorMarker[] = [];
+      for (let i = 0; i < candles.length; i++) {
+        if (r.triggerBuy[i]) {
+          markers.push({
+            time: candles[i].time,
+            position: 'belowBar',
+            shape: 'arrowUp',
+            color: TV.green,
+            text: 'BUY',
+          });
+        } else if (r.triggerSell[i]) {
+          markers.push({
+            time: candles[i].time,
+            position: 'aboveBar',
+            shape: 'arrowDown',
+            color: TV.red,
+            text: 'SELL',
+          });
+        }
+      }
+
+      // Signal bar = කළු, retest bar = තැඹිලි. Outline එක bar එකේ හැබෑ
+      // පාටෙන්ම තියෙනවා (script එකේ විස්තරයේ තියෙන විදිහටම).
+      const barColors = candles.map((_, i) =>
+        r.triggerBuy[i] || r.triggerSell[i]
+          ? { body: TV.black, wick: TV.black }
+          : r.retest[i]
+            ? { body: TV.orange, wick: TV.orange }
+            : undefined,
+      );
+
+      const bias = r.bias[last] ?? 'MILD BEAR';
+      const biasColor =
+        bias === 'STRONG BULL' ? TV.green : bias === 'STRONG BEAR' ? TV.red : TV.gray;
+
+      const panel: IndicatorPanel | undefined =
+        dashPos === 'Off' || last < 0
+          ? undefined
+          : {
+              position: dashPos as IndicatorPanel['position'],
+              background: 'rgba(255, 249, 196, 0.9)',
+              rows: [
+                {
+                  label: 'BULL SCORE',
+                  value: `${Math.round(r.bullPct[last])}%`,
+                  labelColor: '#fff',
+                  labelBackground: TV.green,
+                  valueColor: '#fff',
+                  valueBackground: TV.green,
+                },
+                {
+                  label: 'BEAR SCORE',
+                  value: `${Math.round(r.bearPct[last])}%`,
+                  labelColor: '#fff',
+                  labelBackground: TV.red,
+                  valueColor: '#fff',
+                  valueBackground: TV.red,
+                },
+                {
+                  label: 'MARKET BIAS',
+                  value: bias,
+                  labelColor: '#fff',
+                  labelBackground: '#000',
+                  valueColor: '#fff',
+                  valueBackground: biasColor,
+                },
+                { label: 'System', value: 'KhanSaab Algo Trading', labelColor: '#000', valueColor: '#000' },
+                { label: 'Copyright', value: '© KhanSaab V.02', labelColor: '#000', valueColor: TV.blue },
+              ],
+            };
+
+      return {
+        series: [
+          {
+            key: 'ema-fast',
+            label: `EMA ${num(p, 'fast', 9)}`,
+            type: 'line',
+            color: withAlpha(TV.green, 20),
+            data: toPoints(candles, r.emaFast),
+            lineWidth: 1,
+          },
+          {
+            key: 'ema-mid',
+            label: `EMA ${num(p, 'mid', 21)}`,
+            type: 'line',
+            color: withAlpha(TV.red, 20),
+            data: toPoints(candles, r.emaMid),
+            lineWidth: 1,
+          },
+          {
+            key: 'ema-slow',
+            label: `EMA ${num(p, 'slow', 50)}`,
+            type: 'line',
+            color: TV.blue,
+            data: toPoints(candles, r.emaSlow),
+            lineWidth: 2,
+          },
+          {
+            key: 'vwap',
+            label: 'VWAP',
+            type: 'line',
+            color: TV.green,
+            data: toColoredPoints(candles, r.vwap, vwapColors),
+            lineWidth: 2,
+          },
+        ],
+        bands: [{ key: 'ribbon', points: bandPoints }],
+        barColors,
+        markers,
+        panel,
       };
     },
   },

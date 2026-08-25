@@ -322,9 +322,77 @@ body {
   min-width: 0;
 }
 
+.chart-host {
+  height: 100%;
+  position: relative;
+  width: 100%;
+}
+
 .chart {
   height: 100%;
   width: 100%;
+}
+
+/* ------------------------------------------- indicator dashboard tables */
+
+/* Pine `table.new()` වලට අදාළ එක — chart එක උඩම පාවෙන පොඩි table එකක්.
+   Click chart එකටම යන්න ඕන නිසා pointer-events: none. */
+.chart-panel {
+  border: 1px solid rgba(120, 123, 134, 0.4);
+  font-size: 11px;
+  pointer-events: none;
+  position: absolute;
+  z-index: 5;
+}
+
+.chart-panel.pos-top-right {
+  right: 12px;
+  top: 8px;
+}
+
+.chart-panel.pos-top-left {
+  left: 12px;
+  top: 8px;
+}
+
+.chart-panel.pos-middle-right {
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.chart-panel.pos-middle-left {
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.chart-panel.pos-bottom-right {
+  bottom: 28px;
+  right: 12px;
+}
+
+.chart-panel.pos-bottom-left {
+  bottom: 28px;
+  left: 12px;
+}
+
+.chart-panel-row {
+  display: grid;
+  grid-template-columns: auto minmax(96px, auto);
+}
+
+.chart-panel-row span {
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+
+.chart-panel-row span:first-child {
+  font-weight: 600;
+}
+
+.chart-panel-row span:last-child {
+  text-align: right;
 }
 
 /* -------------------------------------------------------------- watchlist */

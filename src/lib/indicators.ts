@@ -160,3 +160,65 @@ export function vwapArray(candles: Candle[]): number[] {
   }
   return out;
 }
+
+/**
+ * NaN prefix එකක් තියෙන array එකකට RMA එකක් ගහනවා
+ * (මුල NaN ටික අයින් කරලා, ආපහු තැනට දාලා).
+ */
+function rmaSkippingNaN(values: number[], period: number): number[] {
+  const out = new Array<number>(values.length).fill(NaN);
+  const start = values.findIndex((v) => !Number.isNaN(v));
+  if (start < 0) return out;
+  const r = rmaArray(values.slice(start), period);
+  for (let i = 0; i < r.length; i++) out[start + i] = r[i];
+  return out;
+}
+
+/**
+ * Directional Movement Index (Pine `ta.dmi`) — +DI, −DI සහ ADX.
+ * ADX උස නම් trend එක ශක්තිමත්, පහත් නම් range/side-ways.
+ */
+export function dmi(
+  candles: Candle[],
+  diLength: number,
+  adxSmoothing: number,
+): { plus: number[]; minus: number[]; adx: number[] } {
+  const n = candles.length;
+  const plus = new Array<number>(n).fill(NaN);
+  const minus = new Array<number>(n).fill(NaN);
+  const adx = new Array<number>(n).fill(NaN);
+  if (n < 2) return { plus, minus, adx };
+
+  // Bar 0 එකට කලින් bar එකක් නෑ — ඒ නිසා 1 ඉඳන් ගණන් හදලා පස්සේ shift කරනවා.
+  const plusDM = new Array<number>(n - 1);
+  const minusDM = new Array<number>(n - 1);
+  const tr = new Array<number>(n - 1);
+  for (let i = 1; i < n; i++) {
+    const up = candles[i].high - candles[i - 1].high;
+    const down = -(candles[i].low - candles[i - 1].low);
+    plusDM[i - 1] = up > down && up > 0 ? up : 0;
+    minusDM[i - 1] = down > up && down > 0 ? down : 0;
+    tr[i - 1] = trueRange(candles[i], candles[i - 1]);
+  }
+
+  const trur = rmaArray(tr, diLength);
+  const plusR = rmaArray(plusDM, diLength);
+  const minusR = rmaArray(minusDM, diLength);
+
+  const dx = new Array<number>(n - 1).fill(NaN);
+  for (let i = 0; i < n - 1; i++) {
+    if (Number.isNaN(trur[i]) || trur[i] === 0) continue;
+    const p = (100 * plusR[i]) / trur[i];
+    const m = (100 * minusR[i]) / trur[i];
+    plus[i + 1] = p;
+    minus[i + 1] = m;
+    const sum = p + m;
+    dx[i] = Math.abs(p - m) / (sum === 0 ? 1 : sum);
+  }
+
+  const smoothed = rmaSkippingNaN(dx, adxSmoothing);
+  for (let i = 0; i < n - 1; i++) {
+    if (!Number.isNaN(smoothed[i])) adx[i + 1] = 100 * smoothed[i];
+  }
+  return { plus, minus, adx };
+}
