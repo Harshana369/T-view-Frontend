@@ -8,7 +8,7 @@ interface Props {
 
 /**
  * Timeframe (1m ... 1D) තෝරන button row එක.
- * List එක එන්නේ lib/timeframes.ts එකෙන් — Coinbase support කරන ඒවා විතරයි.
+ * List එක එන්නේ lib/timeframes.ts එකෙන් — Binance support කරන ඒවා විතරයි.
  */
 export function TimeframeBar({ value, onChange }: Props) {
   return (

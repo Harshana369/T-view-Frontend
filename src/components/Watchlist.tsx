@@ -1,31 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { fetchPerpSymbols, fetchPrice24hAgo } from '../lib/coinbase';
+import { fetchPerpSymbols } from '../lib/binance';
+import { formatChange, formatPrice } from '../lib/format';
 import type { PerpSymbol } from '../lib/types';
 import { useStore } from '../store';
 
-/** Live price එක refresh කරන පරතරය. */
+/** Live price + 24h change refresh කරන පරතරය. */
 const PRICE_POLL_MS = 5_000;
-/** පැය 24 baseline එක ආපහු ගේන පරතරය (මේක නිතර වෙනස් වෙන්නේ නෑ). */
-const BASE_POLL_MS = 5 * 60_000;
 /** Price එකක් වෙනස් වුණාම highlight වෙලා තියෙන කාලය. */
 const FLASH_MS = 900;
-
-/**
- * Price එකේ decimals ගණන අගය අනුව තෝරනවා —
- * 80,030.01 / 705.80 වගේ ලොකු ඒවාට 2ක්, 1.493 වගේ පොඩි ඒවාට වැඩියෙන්.
- */
-function formatPrice(n: number): string {
-  const decimals = n >= 100 ? 2 : n >= 1 ? 3 : n >= 0.01 ? 4 : 6;
-  return n.toLocaleString('en-US', {
-    minimumFractionDigits: decimals,
-    maximumFractionDigits: decimals,
-  });
-}
-
-/** +3.78% / -1.20% විදිහට. */
-function formatChange(pct: number): string {
-  return `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`;
-}
 
 /**
  * දකුණු පැත්තේ watchlist panel එක — තෝරගත්ත coins ටිකේ live price එකයි,
@@ -38,10 +20,8 @@ export function Watchlist() {
   const addToWatchlist = useStore((s) => s.addToWatchlist);
   const removeFromWatchlist = useStore((s) => s.removeFromWatchlist);
 
-  /** Coinbase එකේ තියෙන හැම perp එකකම දැනට තියෙන price එක (poll වෙනවා). */
+  /** Binance එකේ තියෙන හැම perp එකකම දැනට තියෙන price + change (poll වෙනවා). */
   const [all, setAll] = useState<PerpSymbol[]>([]);
-  /** symbol => පැය 24කට කලින් තිබුණු price එක. */
-  const [baseline, setBaseline] = useState<Record<string, number>>({});
   /** දැන් flash වෙන්න ඕන පේළි ටික (price එක වෙනස් වුණු ඒවා). */
   const [flashing, setFlashing] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
@@ -49,7 +29,7 @@ export function Watchlist() {
   const [adding, setAdding] = useState(false);
   const [query, setQuery] = useState('');
 
-  // සියලුම prices poll කරනවා — එක request එකකින් හැම පේළියකටම ඇති.
+  // සියලුම prices poll කරනවා — එක ticker request එකකින් හැම පේළියකටම ඇති.
   useEffect(() => {
     let stopped = false;
     const tick = async () => {
@@ -70,29 +50,6 @@ export function Watchlist() {
     };
   }, []);
 
-  // පැය 24 baseline එක — watchlist එක වෙනස් වුණාමයි, විනාඩි 5කට වරක්.
-  const key = watchlist.join(',');
-  useEffect(() => {
-    let stopped = false;
-    const load = async () => {
-      for (const s of key ? key.split(',') : []) {
-        try {
-          const price = await fetchPrice24hAgo(s);
-          if (stopped || price === null) continue;
-          setBaseline((prev) => ({ ...prev, [s]: price }));
-        } catch {
-          // එක coin එකක් අඩුපාඩු වුණාට අනිත් ඒවා නවත්තන්නේ නෑ.
-        }
-      }
-    };
-    const timer = setInterval(load, BASE_POLL_MS);
-    void load();
-    return () => {
-      stopped = true;
-      clearInterval(timer);
-    };
-  }, [key]);
-
   // Symbol => PerpSymbol map එකක් — පේළි හදනකොට හොයාගන්න ලේසියි.
   const bySymbol = useMemo(() => {
     const map = new Map<string, PerpSymbol>();
@@ -104,16 +61,15 @@ export function Watchlist() {
     () =>
       watchlist.map((s) => {
         const live = bySymbol.get(s);
-        const prev = baseline[s];
-        const price = live?.price ?? 0;
         return {
           symbol: s,
-          base: live?.base ?? s.replace('-PERP', ''),
-          price,
-          changePct: prev && price ? ((price - prev) / prev) * 100 : null,
+          base: live?.base ?? s.replace(/USDT$/, ''),
+          price: live?.price ?? 0,
+          priceDecimals: live?.priceDecimals,
+          changePct: live?.changePct ?? null,
         };
       }),
-    [watchlist, bySymbol, baseline],
+    [watchlist, bySymbol],
   );
 
   // Price එකක් වෙනස් වුණාම ඒ පේළිය මොහොතකට highlight කරනවා.
@@ -189,8 +145,10 @@ export function Watchlist() {
                     setQuery('');
                   }}
                 >
-                  <span className="sym">{s.symbol}</span>
-                  <span className="px">{s.price > 0 ? formatPrice(s.price) : '-'}</span>
+                  <span className="sym">{s.base}</span>
+                  <span className="px">
+                    {s.price > 0 ? formatPrice(s.price, s.priceDecimals) : '-'}
+                  </span>
                 </button>
               </li>
             ))}
@@ -214,7 +172,7 @@ export function Watchlist() {
 
               <span className="wl-nums">
                 <span className={flashing[row.symbol] ? 'wl-price flash' : 'wl-price'}>
-                  {row.price > 0 ? formatPrice(row.price) : '—'}
+                  {row.price > 0 ? formatPrice(row.price, row.priceDecimals) : '—'}
                 </span>
                 <span
                   className={

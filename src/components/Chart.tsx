@@ -11,7 +11,7 @@ import {
   type ISeriesApi,
   type SeriesType,
 } from 'lightweight-charts';
-import { fetchCandles, subscribeCandles } from '../lib/coinbase';
+import { fetchCandles, subscribeCandles } from '../lib/binance';
 import { indicatorById } from '../lib/indicatorRegistry';
 import { timeframeOf } from '../lib/timeframes';
 import type { Candle, Interval } from '../lib/types';
@@ -127,9 +127,14 @@ export function Chart({ symbol, interval, onPrice, onLoading, onError }: ChartPr
 
     void (async () => {
       try {
-        const candles = await fetchCandles(symbol, tf);
+        const { candles, priceDecimals } = await fetchCandles(symbol, tf);
         if (cancelled) return;
         candlesRef.current = candles;
+        // Coin එකෙන් coin එකට decimals වෙනස් (BTC 2ක්, 1000SATS 8ක්) —
+        // price scale එකට ඒ market එකේ හරි precision එක දෙනවා.
+        candleSeries.applyOptions({
+          priceFormat: { type: 'price', precision: priceDecimals, minMove: 10 ** -priceDecimals },
+        });
         candleSeries.setData(candles);
         volumeSeries.setData(candles.map(volumeBar));
         chartRef.current?.timeScale().fitContent();

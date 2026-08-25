@@ -183,7 +183,7 @@ body {
   display: grid;
   font: inherit;
   gap: 8px;
-  grid-template-columns: 1fr auto auto;
+  grid-template-columns: 1fr auto 58px 52px;
   padding: 5px 6px;
   text-align: left;
   width: 100%;
@@ -202,9 +202,31 @@ body {
 }
 
 .px,
-.vol {
+.vol,
+.chg {
   color: var(--dim);
   font-variant-numeric: tabular-nums;
+}
+
+.px {
+  text-align: right;
+}
+
+/* Picker list එකේ 24h change column එක. */
+.chg {
+  text-align: right;
+}
+
+.chg.up {
+  color: #26a69a;
+}
+
+.chg.down {
+  color: #ef5350;
+}
+
+.vol {
+  text-align: right;
 }
 
 /* ------------------------------------------------------- active indicators */

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { fetchPerpSymbols } from '../lib/coinbase';
+import { fetchPerpSymbols } from '../lib/binance';
+import { compact, formatChange, formatPrice } from '../lib/format';
 import type { PerpSymbol } from '../lib/types';
 
 interface Props {
@@ -7,17 +8,8 @@ interface Props {
   onChange: (symbol: string) => void;
 }
 
-/** ලොකු ඉලක්කම් කෙටියෙන් පෙන්වනවා (1.2B, 340M, 12K වගේ). */
-function compact(n: number): string {
-  if (!Number.isFinite(n) || n <= 0) return '-';
-  if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
-  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
-  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
-  return n.toFixed(0);
-}
-
 /**
- * Coinbase perps *සියලුම* coins ටික පෙන්වන dropdown එක.
+ * Binance USDT-M perps *සියලුම* coins ටික පෙන්වන dropdown එක.
  * Mount වෙනකොට එක පාරක් instruments list එක ගේනවා, ඊට පස්සේ search box
  * එකෙන් filter කරනවා. List එක volume එක අනුව sort වෙලා එනවා.
  */
@@ -90,8 +82,17 @@ export function SymbolPicker({ value, onChange }: Props) {
                     setQuery('');
                   }}
                 >
-                  <span className="sym">{s.symbol}</span>
-                  <span className="px">{s.price > 0 ? s.price : '-'}</span>
+                  <span className="sym">{s.base}</span>
+                  <span className="px">
+                    {s.price > 0 ? formatPrice(s.price, s.priceDecimals) : '-'}
+                  </span>
+                  <span
+                    className={
+                      s.changePct === null ? 'chg' : s.changePct >= 0 ? 'chg up' : 'chg down'
+                    }
+                  >
+                    {s.changePct === null ? '-' : formatChange(s.changePct)}
+                  </span>
                   <span className="vol">{compact(s.notional24h)}</span>
                 </button>
               </li>

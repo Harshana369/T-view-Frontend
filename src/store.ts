@@ -16,7 +16,7 @@ interface AppState {
   symbol: string;
   interval: Interval;
   indicators: ActiveIndicator[];
-  /** Watchlist panel එකේ පේළි — Coinbase symbol ටික, පෙන්නන පිළිවෙලට. */
+  /** Watchlist panel එකේ පේළි — Binance symbol ටික, පෙන්නන පිළිවෙලට. */
   watchlist: string[];
   setSymbol: (symbol: string) => void;
   setInterval: (interval: Interval) => void;
@@ -32,10 +32,10 @@ export const useStore = create<AppState>()(
   // save වෙනවා — refresh කළාම ආපහු එතනින්ම පටන් ගන්න.
   persist(
     (set) => ({
-      symbol: 'BTC-PERP',
+      symbol: 'BTCUSDT',
       interval: '15m',
       indicators: [],
-      watchlist: ['BTC-PERP', 'ETH-PERP', 'BNB-PERP', 'SOL-PERP', 'XRP-PERP'],
+      watchlist: ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT'],
 
       setSymbol: (symbol) => set({ symbol }),
       setInterval: (interval) => set({ interval }),
@@ -71,6 +71,21 @@ export const useStore = create<AppState>()(
           ),
         })),
     }),
-    { name: 'apps2-chart' },
+    {
+      name: 'apps2-chart',
+      // v0 = Coinbase INTX symbols (BTC-PERP), v1 = Binance symbols (BTCUSDT).
+      // කලින් save වෙලා තිබුණු ඒවා අලුත් format එකට හරවනවා.
+      version: 1,
+      migrate: (state, version) => {
+        const old = state as Partial<AppState> | undefined;
+        if (version >= 1 || !old) return old as AppState;
+        const toBinance = (s: string) => s.replace(/-PERP$/, 'USDT');
+        return {
+          ...old,
+          symbol: old.symbol ? toBinance(old.symbol) : 'BTCUSDT',
+          watchlist: (old.watchlist ?? []).map(toBinance),
+        } as AppState;
+      },
+    },
   ),
 );
