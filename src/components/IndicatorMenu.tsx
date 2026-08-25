@@ -45,36 +45,59 @@ export function IndicatorMenu() {
                   if (!def) return null;
                   return (
                     <li key={instance.instanceId} className="ind-row">
-                      <span className="ind-name">{def.name}</span>
-                      {def.params.map((param) => (
-                        <label key={param.key} className="ind-param">
-                          {param.label}
-                          <input
-                            type="number"
-                            min={param.min}
-                            max={param.max}
-                            value={instance.params[param.key]}
-                            onChange={(e) => {
-                              // හිස්/වැරදි අගයන් නොගෙන, range එක ඇතුළේ තියාගන්නවා.
-                              const n = Number(e.target.value);
-                              if (!Number.isFinite(n)) return;
-                              setParam(
-                                instance.instanceId,
-                                param.key,
-                                Math.min(param.max, Math.max(param.min, n)),
-                              );
-                            }}
-                          />
-                        </label>
-                      ))}
-                      <button
-                        type="button"
-                        className="ind-remove"
-                        onClick={() => removeIndicator(instance.instanceId)}
-                        aria-label={`Remove ${def.name}`}
-                      >
-                        ✕
-                      </button>
+                      <div className="ind-head">
+                        <span className="ind-name">{def.name}</span>
+                        <button
+                          type="button"
+                          className="ind-remove"
+                          onClick={() => removeIndicator(instance.instanceId)}
+                          aria-label={`Remove ${def.name}`}
+                        >
+                          ✕
+                        </button>
+                      </div>
+
+                      <div className="ind-params">
+                        {def.params.map((param) => (
+                          <label key={param.key} className="ind-param">
+                            {param.label}
+                            {param.kind === 'select' ? (
+                              <select
+                                value={String(instance.params[param.key] ?? param.default)}
+                                onChange={(e) =>
+                                  setParam(instance.instanceId, param.key, e.target.value)
+                                }
+                              >
+                                {param.options?.map((option) => (
+                                  <option key={option} value={option}>
+                                    {option}
+                                  </option>
+                                ))}
+                              </select>
+                            ) : (
+                              <input
+                                type="number"
+                                min={param.min}
+                                max={param.max}
+                                step={param.step ?? 1}
+                                value={Number(instance.params[param.key] ?? param.default)}
+                                onChange={(e) => {
+                                  // හිස්/වැරදි අගයන් නොගෙන, range එක ඇතුළේ තියාගන්නවා.
+                                  const n = Number(e.target.value);
+                                  if (!Number.isFinite(n)) return;
+                                  const min = param.min ?? -Infinity;
+                                  const max = param.max ?? Infinity;
+                                  setParam(
+                                    instance.instanceId,
+                                    param.key,
+                                    Math.min(max, Math.max(min, n)),
+                                  );
+                                }}
+                              />
+                            )}
+                          </label>
+                        ))}
+                      </div>
                     </li>
                   );
                 })}

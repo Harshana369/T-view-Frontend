@@ -237,17 +237,33 @@ body {
   padding: 0;
 }
 
+/* Param ගොඩක් තියෙන indicators (MAD Loop වගේ) නිසා පේළිය කැඩෙනවා. */
 .ind-row {
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 2px;
+}
+
+.ind-row:last-child {
+  border-bottom: 0;
+}
+
+.ind-head {
   align-items: center;
   display: flex;
-  flex-wrap: nowrap;
   gap: 6px;
-  padding: 4px 2px;
 }
 
 .ind-name {
   font-weight: 600;
-  min-width: 72px;
+}
+
+.ind-params {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
 }
 
 .ind-param {
@@ -258,14 +274,23 @@ body {
   gap: 4px;
 }
 
-.ind-param input {
+.ind-param input,
+.ind-param select {
   background: #0d1017;
   border: 1px solid var(--border);
   border-radius: 3px;
   color: var(--text);
   font: inherit;
+  font-size: 11px;
   padding: 2px 4px;
-  width: 46px;
+}
+
+.ind-param input {
+  width: 52px;
+}
+
+.ind-param select {
+  max-width: 128px;
 }
 
 .ind-remove {
@@ -354,7 +379,8 @@ body {
   padding: 0;
 }
 
-.wl-suggest .picker-item {
+.wl-suggest .picker-item,
+.picker-pop.wide .picker-item {
   grid-template-columns: 1fr auto;
 }
 

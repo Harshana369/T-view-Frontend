@@ -6,10 +6,14 @@ import {
   LineSeries,
   LineStyle,
   createChart,
+  createSeriesMarkers,
   type IChartApi,
   type IPriceLine,
   type ISeriesApi,
+  type ISeriesMarkersPluginApi,
+  type LineWidth,
   type SeriesType,
+  type Time,
 } from 'lightweight-charts';
 import { fetchCandles, subscribeCandles } from '../lib/binance';
 import { indicatorById } from '../lib/indicatorRegistry';
@@ -186,49 +190,60 @@ export function Chart({ symbol, interval, onPrice, onLoading, onError }: ChartPr
   // ------------------------------------------- indicators අඳිනවා / අයින් කරනවා
   useEffect(() => {
     const chart = chartRef.current;
+    const candleSeries = candleSeriesRef.current;
     const candles = candlesRef.current;
-    if (!chart || candles.length === 0) return;
+    if (!chart || !candleSeries || candles.length === 0) return;
 
     const created: ISeriesApi<SeriesType>[] = [];
     const createdPanes: number[] = [];
     const priceLines: { series: ISeriesApi<SeriesType>; line: IPriceLine }[] = [];
+    const markerPlugins: ISeriesMarkersPluginApi<Time>[] = [];
+    // Candles වලට පාට දාන indicator එකක් තියෙනවා නම් (Pine `barcolor()` වගේ).
+    let barColors: (string | undefined)[] | null = null;
 
     for (const instance of indicators) {
       const def = indicatorById(instance.defId);
       if (!def) continue;
-      // 'separate' නම් යටින් අලුත් pane එකක්, නැත්නම් price pane එකේම (0).
+      const out = def.compute(candles, instance.params);
+
+      // Series එකකට හරි 'separate' ඕන නම් විතරයි අලුත් pane එකක් හදන්නේ.
+      const needsPane = out.series.some((s) => (s.pane ?? def.pane) === 'separate');
       let paneIndex = 0;
-      if (def.pane === 'separate') {
+      if (needsPane) {
         const pane = chart.addPane();
         pane.setHeight(120);
         paneIndex = pane.paneIndex();
         createdPanes.push(paneIndex);
       }
 
-      let first = true;
-      for (const s of def.compute(candles, instance.params)) {
+      let firstInPane = true;
+      for (const s of out.series) {
+        const target = (s.pane ?? def.pane) === 'separate' ? paneIndex : 0;
         const series: ISeriesApi<SeriesType> =
           s.type === 'histogram'
             ? chart.addSeries(
                 HistogramSeries,
                 { color: s.color, priceLineVisible: false, lastValueVisible: false },
-                paneIndex,
+                target,
               )
             : chart.addSeries(
                 LineSeries,
                 {
                   color: s.color,
-                  lineWidth: 2,
+                  // Glow effect එකට 10 වගේ ලොකු අගයක් යනවා — typings එකේ
+                  // 1–4 විතරයි කිව්වත් renderer එක ඕනම ඝනකමක් අඳිනවා.
+                  lineWidth: (s.lineWidth ?? 2) as LineWidth,
                   priceLineVisible: false,
-                  title: def.pane === 'separate' ? '' : s.label,
+                  lastValueVisible: s.lastValueVisible ?? true,
+                  title: target === 0 ? s.label : '',
                 },
-                paneIndex,
+                target,
               );
         series.setData(s.data);
         created.push(series);
 
         // RSI 30/70 වගේ reference lines — pane එකේ පළමු series එකට විතරක්.
-        if (first && def.levels) {
+        if (needsPane && firstInPane && target === paneIndex && def.levels) {
           for (const level of def.levels) {
             priceLines.push({
               series,
@@ -242,17 +257,37 @@ export function Chart({ symbol, interval, onPrice, onLoading, onError }: ChartPr
               }),
             });
           }
+          firstInPane = false;
         }
-        first = false;
       }
+
+      // Long / Short labels (Pine `plotshape`) — candles series එකට.
+      if (out.markers && out.markers.length > 0) {
+        markerPlugins.push(createSeriesMarkers(candleSeries, out.markers));
+      }
+      if (out.barColors) barColors = out.barColors;
+    }
+
+    if (barColors) {
+      const colors = barColors;
+      candleSeries.setData(
+        candles.map((c, i) =>
+          colors[i]
+            ? { ...c, color: colors[i], borderColor: colors[i], wickColor: colors[i] }
+            : c,
+        ),
+      );
     }
 
     return () => {
-      // Cleanup: price lines, series, ඊට පස්සේ panes (ලොකු index එකේ ඉඳන්
-      // අයින් කරනවා — නැත්නම් index අනුපිළිවෙල මාරු වෙනවා).
+      // Cleanup: price lines, markers, series, ඊට පස්සේ panes (ලොකු index
+      // එකේ ඉඳන් අයින් කරනවා — නැත්නම් index අනුපිළිවෙල මාරු වෙනවා).
       for (const p of priceLines) p.series.removePriceLine(p.line);
+      for (const plugin of markerPlugins) plugin.detach();
       for (const series of created) chart.removeSeries(series);
       for (const index of [...createdPanes].sort((a, b) => b - a)) chart.removePane(index);
+      // Candles වල පාට ආපහු සාමාන්‍ය කොළ/රතු වලට.
+      if (barColors) candleSeries.setData(candlesRef.current);
     };
   }, [indicators, barsVersion, chartEpoch]);
 

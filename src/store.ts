@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { defaultParams, indicatorById } from './lib/indicatorRegistry';
+import { defaultParams, indicatorById, type ParamValue, type Params } from './lib/indicatorRegistry';
 import type { Interval } from './lib/types';
 
 /** Chart එකට add කරලා තියෙන එක indicator instance එකක්. */
@@ -9,7 +9,8 @@ export interface ActiveIndicator {
   instanceId: string;
   /** indicatorRegistry.ts එකේ definition id එක. */
   defId: string;
-  params: Record<string, number>;
+  /** Length වගේ number settings සහ MA type වගේ dropdown settings. */
+  params: Params;
 }
 
 interface AppState {
@@ -24,7 +25,7 @@ interface AppState {
   removeFromWatchlist: (symbol: string) => void;
   addIndicator: (defId: string) => void;
   removeIndicator: (instanceId: string) => void;
-  setParam: (instanceId: string, key: string, value: number) => void;
+  setParam: (instanceId: string, key: string, value: ParamValue) => void;
 }
 
 export const useStore = create<AppState>()(

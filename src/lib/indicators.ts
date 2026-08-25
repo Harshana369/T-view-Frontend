@@ -33,8 +33,8 @@ export function emaArray(values: number[], period: number): number[] {
   return out;
 }
 
-/** Wilder's RMA (RSI/ATR වලට ගන්න smoothing එක). */
-function rmaArray(values: number[], period: number): number[] {
+/** Wilder's RMA (RSI/ATR වලට ගන්න smoothing එක; SMMA එකත් මේකමයි). */
+export function rmaArray(values: number[], period: number): number[] {
   const out = new Array<number>(values.length).fill(NaN);
   if (values.length < period) return out;
   let sum = 0;
