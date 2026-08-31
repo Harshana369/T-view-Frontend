@@ -2,32 +2,53 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { fetchPerpSymbols } from '../lib/binance';
 import { formatChange, formatPrice } from '../lib/format';
 import type { PerpSymbol } from '../lib/types';
-import { useStore } from '../store';
+import { ALL_GROUP_ID, useStore } from '../store';
 
 /** Live price + 24h change refresh කරන පරතරය. */
 const PRICE_POLL_MS = 5_000;
 /** Price එකක් වෙනස් වුණාම highlight වෙලා තියෙන කාලය. */
 const FLASH_MS = 900;
 
+interface Row {
+  symbol: string;
+  base: string;
+  price: number;
+  priceDecimals?: number;
+  changePct: number | null;
+}
+
 /**
  * දකුණු පැත්තේ watchlist panel එක — තෝරගත්ත coins ටිකේ live price එකයි,
  * යටින් පැය 24ේ % change එකයි. පේළියක් click කළාම chart එක ඒ coin එකට මාරු වෙනවා.
+ *
+ * Coins groups වලට බෙදන්න පුළුවන් (Favorites, Majors, Memes...) — ඒ එක්කම
+ * Binance එකේ තියෙන *සියලුම* perps පෙන්නන "All coins" group එකකුත් තියෙනවා.
  */
 export function Watchlist() {
-  const watchlist = useStore((s) => s.watchlist);
+  const watchGroups = useStore((s) => s.watchGroups);
+  const activeGroupId = useStore((s) => s.activeGroupId);
   const symbol = useStore((s) => s.symbol);
   const setSymbol = useStore((s) => s.setSymbol);
+  const setActiveGroup = useStore((s) => s.setActiveGroup);
+  const addGroup = useStore((s) => s.addGroup);
+  const renameGroup = useStore((s) => s.renameGroup);
+  const removeGroup = useStore((s) => s.removeGroup);
   const addToWatchlist = useStore((s) => s.addToWatchlist);
   const removeFromWatchlist = useStore((s) => s.removeFromWatchlist);
 
-  /** Binance එකේ තියෙන හැම perp එකකම දැනට තියෙන price + change (poll වෙනවා). */
+  /** Binance එකේ හැම perp එකකම දැනට තියෙන price + change (poll වෙනවා). */
   const [all, setAll] = useState<PerpSymbol[]>([]);
-  /** දැන් flash වෙන්න ඕන පේළි ටික (price එක වෙනස් වුණු ඒවා). */
+  /** දැන් flash වෙන පේළි ටික (price එක වෙනස් වුණු ඒවා). */
   const [flashing, setFlashing] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
 
   const [adding, setAdding] = useState(false);
+  const [managing, setManaging] = useState(false);
   const [query, setQuery] = useState('');
+  const [filter, setFilter] = useState('');
+
+  const activeGroup = watchGroups.find((g) => g.id === activeGroupId);
+  const isAll = activeGroupId === ALL_GROUP_ID || !activeGroup;
 
   // සියලුම prices poll කරනවා — එක ticker request එකකින් හැම පේළියකටම ඇති.
   useEffect(() => {
@@ -57,55 +78,73 @@ export function Watchlist() {
     return map;
   }, [all]);
 
-  const rows = useMemo(
-    () =>
-      watchlist.map((s) => {
-        const live = bySymbol.get(s);
-        return {
-          symbol: s,
-          base: live?.base ?? s.replace(/USDT$/, ''),
-          price: live?.price ?? 0,
-          priceDecimals: live?.priceDecimals,
-          changePct: live?.changePct ?? null,
-        };
-      }),
-    [watchlist, bySymbol],
-  );
+  /**
+   * "All coins" එකේ පිළිවෙල volume එක අනුව — ඒත් හැම poll එකකදීම ආපහු
+   * sort වුණොත් scroll කරනකොට පේළි උඩ පල්ලෙහා පනිනවා. ඒ නිසා coins ලැයිස්තුව
+   * වෙනස් වුණාම විතරයි පිළිවෙල අලුත් කරන්නේ.
+   */
+  const orderRef = useRef<string[]>([]);
+  const allOrder = useMemo(() => {
+    const symbols = all.map((s) => s.symbol);
+    const previous = orderRef.current;
+    const same =
+      previous.length === symbols.length && symbols.every((s) => previous.includes(s));
+    if (!same) orderRef.current = symbols;
+    return orderRef.current;
+  }, [all]);
 
-  // Price එකක් වෙනස් වුණාම ඒ පේළිය මොහොතකට highlight කරනවා.
+  const rows = useMemo<Row[]>(() => {
+    const symbols = isAll ? allOrder : (activeGroup?.symbols ?? []);
+    return symbols.map((s) => {
+      const live = bySymbol.get(s);
+      return {
+        symbol: s,
+        base: live?.base ?? s.replace(/USDT$/, ''),
+        price: live?.price ?? 0,
+        priceDecimals: live?.priceDecimals,
+        changePct: live?.changePct ?? null,
+      };
+    });
+  }, [isAll, allOrder, activeGroup, bySymbol]);
+
+  const visibleRows = useMemo(() => {
+    const q = filter.trim().toUpperCase();
+    if (!q) return rows;
+    return rows.filter((r) => r.symbol.includes(q) || r.base.includes(q));
+  }, [rows, filter]);
+
+  // Price එකක් වෙනස් වුණාම ඒ පේළිය මොහොතකට highlight කරනවා. All coins
+  // group එකේ පේළි 500ක් විතර තියෙන නිසා, එකපාරට එකම state update එකක්.
   const lastPrices = useRef<Record<string, number>>({});
-  const timers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   useEffect(() => {
+    const changed: Record<string, boolean> = {};
+    let any = false;
     for (const row of rows) {
       if (row.price <= 0) continue;
       const before = lastPrices.current[row.symbol];
       lastPrices.current[row.symbol] = row.price;
       if (before === undefined || before === row.price) continue;
-
-      setFlashing((f) => ({ ...f, [row.symbol]: true }));
-      clearTimeout(timers.current[row.symbol]);
-      timers.current[row.symbol] = setTimeout(() => {
-        setFlashing((f) => ({ ...f, [row.symbol]: false }));
-      }, FLASH_MS);
+      changed[row.symbol] = true;
+      any = true;
     }
+    if (!any) return;
+    setFlashing(changed);
+    const timer = setTimeout(() => setFlashing({}), FLASH_MS);
+    return () => clearTimeout(timer);
   }, [rows]);
 
-  // Component එක යනකොට ඉතුරු වෙලා තියෙන timers ටික අයින් කරනවා.
-  useEffect(() => {
-    const pending = timers.current;
-    return () => {
-      for (const t of Object.values(pending)) clearTimeout(t);
-    };
-  }, []);
-
-  // "+" එකෙන් දාන්න පුළුවන් ඒවා — දැනටමත් list එකේ නැති, search එකට ගැළපෙන coins.
+  // "+" එකෙන් දාන්න පුළුවන් ඒවා — දැනටමත් group එකේ නැති, search එකට ගැළපෙන coins.
   const suggestions = useMemo(() => {
     const q = query.trim().toUpperCase();
+    const inGroup = new Set(activeGroup?.symbols ?? []);
     return all
-      .filter((s) => !watchlist.includes(s.symbol))
+      .filter((s) => !inGroup.has(s.symbol))
       .filter((s) => !q || s.symbol.includes(q) || s.base.includes(q))
       .slice(0, 8);
-  }, [all, watchlist, query]);
+  }, [all, activeGroup, query]);
+
+  /** All coins එකේ ඉඳන් coin එකක් දාද්දී යන group එක. */
+  const addTargetName = activeGroup?.name ?? watchGroups[0]?.name ?? 'Favorites';
 
   return (
     <aside className="watchlist">
@@ -114,17 +153,94 @@ export function Watchlist() {
         <button
           type="button"
           className="wl-add"
-          title="Coin එකක් දාන්න"
+          title={isAll ? 'Group එකක් හදන්න' : 'Coin එකක් දාන්න'}
           onClick={() => {
+            if (isAll) {
+              setManaging((mm) => !mm);
+              return;
+            }
             setAdding((a) => !a);
             setQuery('');
           }}
         >
-          {adding ? '×' : '+'}
+          {(isAll ? managing : adding) ? '×' : '+'}
         </button>
       </div>
 
-      {adding && (
+      {/* ── Group එක තෝරන තැන ─────────────────────────────────────── */}
+      <div className="wl-groups">
+        <select
+          className="wl-group-select"
+          value={isAll ? ALL_GROUP_ID : activeGroupId}
+          onChange={(e) => {
+            if (e.target.value === '__new__') {
+              const name = window.prompt('Group එකේ නම?');
+              if (name) addGroup(name);
+              return;
+            }
+            setActiveGroup(e.target.value);
+            setManaging(false);
+            setAdding(false);
+          }}
+        >
+          <option value={ALL_GROUP_ID}>All coins ({all.length})</option>
+          {watchGroups.map((g) => (
+            <option key={g.id} value={g.id}>
+              {g.name} ({g.symbols.length})
+            </option>
+          ))}
+          <option value="__new__">＋ New group…</option>
+        </select>
+
+        {!isAll && (
+          <button
+            type="button"
+            className="wl-add"
+            title="Group එක rename / delete"
+            onClick={() => setManaging((mm) => !mm)}
+          >
+            ⋯
+          </button>
+        )}
+      </div>
+
+      {managing && (
+        <div className="wl-adder">
+          {activeGroup ? (
+            <>
+              <input
+                className="picker-search"
+                value={activeGroup.name}
+                onChange={(e) => renameGroup(activeGroup.id, e.target.value)}
+              />
+              <button
+                type="button"
+                className="wl-danger"
+                onClick={() => {
+                  removeGroup(activeGroup.id);
+                  setManaging(false);
+                }}
+              >
+                Delete "{activeGroup.name}"
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              className="wl-ghost"
+              onClick={() => {
+                const name = window.prompt('Group එකේ නම?');
+                if (name) addGroup(name);
+                setManaging(false);
+              }}
+            >
+              ＋ New group
+            </button>
+          )}
+        </div>
+      )}
+
+      {adding && !isAll && (
         <div className="wl-adder">
           <input
             className="picker-search"
@@ -156,8 +272,16 @@ export function Watchlist() {
         </div>
       )}
 
+      {/* All coins එකේ 500කට වඩා තියෙන නිසා filter එකක් ඕනම වෙනවා. */}
+      <input
+        className="wl-filter"
+        placeholder={`Filter ${isAll ? 'all coins' : activeGroup?.name}…`}
+        value={filter}
+        onChange={(e) => setFilter(e.target.value)}
+      />
+
       <ul className="wl-list">
-        {rows.map((row) => (
+        {visibleRows.map((row) => (
           <li key={row.symbol}>
             <div
               className={row.symbol === symbol ? 'wl-row active' : 'wl-row'}
@@ -187,23 +311,39 @@ export function Watchlist() {
                 </span>
               </span>
 
-              <button
-                type="button"
-                className="wl-remove"
-                title="අයින් කරන්න"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  removeFromWatchlist(row.symbol);
-                }}
-              >
-                {'×'}
-              </button>
+              {isAll ? (
+                <button
+                  type="button"
+                  className="wl-remove"
+                  title={`"${addTargetName}" group එකට දාන්න`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    addToWatchlist(row.symbol, watchGroups[0]?.id);
+                  }}
+                >
+                  +
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="wl-remove"
+                  title="Group එකෙන් අයින් කරන්න"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    removeFromWatchlist(row.symbol);
+                  }}
+                >
+                  {'×'}
+                </button>
+              )}
             </div>
           </li>
         ))}
       </ul>
 
-      {error && <div className="wl-err">{error}</div>}
+      <div className="wl-foot">
+        {error ? <span className="wl-err">{error}</span> : `${visibleRows.length} coins`}
+      </div>
     </aside>
   );
 }

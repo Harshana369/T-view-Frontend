@@ -434,9 +434,72 @@ body {
   color: var(--text);
 }
 
+/* Group එක තෝරන තීරුව. */
+.wl-groups {
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 4px;
+  padding: 6px 8px;
+}
+
+.wl-group-select {
+  background: #0d1017;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  flex: 1;
+  font: inherit;
+  font-size: 11px;
+  min-width: 0;
+  padding: 4px 6px;
+}
+
 .wl-adder {
   border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   padding: 8px;
+}
+
+.wl-danger,
+.wl-ghost {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--dim);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  padding: 4px 6px;
+}
+
+.wl-danger:hover {
+  border-color: #ef5350;
+  color: #ef5350;
+}
+
+.wl-ghost:hover {
+  border-color: #3b4152;
+  color: var(--text);
+}
+
+/* All coins එකේ 500කට වඩා තියෙන නිසා filter box එක. */
+.wl-filter {
+  background: #0d1017;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  padding: 6px 10px;
+  width: 100%;
+}
+
+.wl-filter:focus {
+  outline: none;
+  border-bottom-color: var(--accent);
 }
 
 .wl-suggest {
@@ -532,7 +595,8 @@ body {
   padding: 0;
 }
 
-.wl-row:hover .wl-remove {
+.wl-row:hover .wl-remove,
+.wl-row.active .wl-remove {
   color: var(--dim);
 }
 
@@ -540,9 +604,17 @@ body {
   color: #ef5350;
 }
 
-.wl-err {
+.wl-foot {
   border-top: 1px solid var(--border);
+  color: var(--dim);
+  font-size: 10px;
+  padding: 5px 10px;
+}
+
+.wl-err {
   color: #ef5350;
-  font-size: 11px;
-  padding: 6px 10px;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

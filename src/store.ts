@@ -13,40 +13,133 @@ export interface ActiveIndicator {
   params: Params;
 }
 
+/** Watchlist එකේ එක group එකක් (උදා: Favorites, Majors, Memes). */
+export interface WatchGroup {
+  id: string;
+  name: string;
+  /** Group එකේ coins, පෙන්නන පිළිවෙලට. */
+  symbols: string[];
+}
+
+/**
+ * "සියලුම coins" group එකේ id එක. මේක store එකේ save වෙන්නේ නෑ —
+ * Binance එකේ දැනට trading තියෙන හැම perp එකක්ම live list එකෙන් එනවා.
+ */
+export const ALL_GROUP_ID = 'all';
+
+const DEFAULT_SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT'];
+
 interface AppState {
   symbol: string;
   interval: Interval;
   indicators: ActiveIndicator[];
-  /** Watchlist panel එකේ පේළි — Binance symbol ටික, පෙන්නන පිළිවෙලට. */
-  watchlist: string[];
+  /** User හදාගත්ත groups ටික (ALL group එක මේකේ නෑ). */
+  watchGroups: WatchGroup[];
+  /** දැන් බලාගෙන ඉන්න group එක — `ALL_GROUP_ID` හෝ group id එකක්. */
+  activeGroupId: string;
   setSymbol: (symbol: string) => void;
   setInterval: (interval: Interval) => void;
-  addToWatchlist: (symbol: string) => void;
-  removeFromWatchlist: (symbol: string) => void;
+  setActiveGroup: (groupId: string) => void;
+  /** අලුත් group එකක් හදලා ඒකේ id එක දෙනවා. */
+  addGroup: (name: string) => string;
+  renameGroup: (groupId: string, name: string) => void;
+  removeGroup: (groupId: string) => void;
+  /** Group එකක් දුන්නේ නැත්නම් active එකට (ALL නම් අන්තිමට පාවිච්චි කළ එකට). */
+  addToWatchlist: (symbol: string, groupId?: string) => void;
+  removeFromWatchlist: (symbol: string, groupId?: string) => void;
   addIndicator: (defId: string) => void;
   removeIndicator: (instanceId: string) => void;
   setParam: (instanceId: string, key: string, value: ParamValue) => void;
 }
 
+/** Group එකකට කෙටි unique id එකක්. */
+function newGroupId(): string {
+  return `g-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+}
+
+/** Coin එකක් දාන්න/අයින් කරන්න ඕන group එක තෝරගන්නවා (ALL එකට save කරන්න බෑ). */
+function targetGroupId(state: AppState, groupId?: string): string | null {
+  const wanted = groupId ?? state.activeGroupId;
+  if (wanted !== ALL_GROUP_ID) return wanted;
+  // ALL group එකේ ඉඳන් දාන්නේ නම් — පළමු custom group එකට.
+  return state.watchGroups[0]?.id ?? null;
+}
+
 export const useStore = create<AppState>()(
-  // persist: තෝරගත්ත coin එක, timeframe එක, indicators ටික browser එකේ
-  // save වෙනවා — refresh කළාම ආපහු එතනින්ම පටන් ගන්න.
+  // persist: තෝරගත්ත coin එක, timeframe එක, indicators ටික, watchlist groups
+  // browser එකේ save වෙනවා — refresh කළාම ආපහු එතනින්ම පටන් ගන්න.
   persist(
-    (set) => ({
+    (set, get) => ({
       symbol: 'BTCUSDT',
       interval: '15m',
       indicators: [],
-      watchlist: ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT'],
+      watchGroups: [{ id: 'favorites', name: 'Favorites', symbols: DEFAULT_SYMBOLS }],
+      activeGroupId: 'favorites',
 
       setSymbol: (symbol) => set({ symbol }),
       setInterval: (interval) => set({ interval }),
+      setActiveGroup: (activeGroupId) => set({ activeGroupId }),
 
-      /** දැනටමත් list එකේ තියෙනවා නම් දෙපාරක් දාන්නේ නෑ. */
-      addToWatchlist: (symbol) =>
-        set((s) => (s.watchlist.includes(symbol) ? s : { watchlist: [...s.watchlist, symbol] })),
+      addGroup: (name) => {
+        const id = newGroupId();
+        set((s) => ({
+          watchGroups: [...s.watchGroups, { id, name: name.trim() || 'New group', symbols: [] }],
+          activeGroupId: id,
+        }));
+        return id;
+      },
 
-      removeFromWatchlist: (symbol) =>
-        set((s) => ({ watchlist: s.watchlist.filter((w) => w !== symbol) })),
+      renameGroup: (groupId, name) =>
+        set((s) => ({
+          watchGroups: s.watchGroups.map((g) =>
+            g.id === groupId ? { ...g, name: name.trim() || g.name } : g,
+          ),
+        })),
+
+      removeGroup: (groupId) =>
+        set((s) => {
+          const watchGroups = s.watchGroups.filter((g) => g.id !== groupId);
+          return {
+            watchGroups,
+            // අයින් කරපු එකේ හිටියා නම් ඊළඟ group එකට (නැත්නම් ALL එකට).
+            activeGroupId:
+              s.activeGroupId === groupId
+                ? (watchGroups[0]?.id ?? ALL_GROUP_ID)
+                : s.activeGroupId,
+          };
+        }),
+
+      /** දැනටමත් group එකේ තියෙනවා නම් දෙපාරක් දාන්නේ නෑ. */
+      addToWatchlist: (symbol, groupId) =>
+        set((s) => {
+          const target = targetGroupId(get(), groupId);
+          if (target === null) {
+            // Custom group එකක්වත් නෑ — Favorites එකක් හදලා දානවා.
+            const id = newGroupId();
+            return {
+              watchGroups: [...s.watchGroups, { id, name: 'Favorites', symbols: [symbol] }],
+              activeGroupId: id,
+            };
+          }
+          return {
+            watchGroups: s.watchGroups.map((g) =>
+              g.id === target && !g.symbols.includes(symbol)
+                ? { ...g, symbols: [...g.symbols, symbol] }
+                : g,
+            ),
+          };
+        }),
+
+      removeFromWatchlist: (symbol, groupId) =>
+        set((s) => {
+          const target = targetGroupId(get(), groupId);
+          if (target === null) return s;
+          return {
+            watchGroups: s.watchGroups.map((g) =>
+              g.id === target ? { ...g, symbols: g.symbols.filter((w) => w !== symbol) } : g,
+            ),
+          };
+        }),
 
       /** Registry එකේ default params එක්ක අලුත් indicator instance එකක් දානවා. */
       addIndicator: (defId) =>
@@ -74,18 +167,28 @@ export const useStore = create<AppState>()(
     }),
     {
       name: 'apps2-chart',
-      // v0 = Coinbase INTX symbols (BTC-PERP), v1 = Binance symbols (BTCUSDT).
-      // කලින් save වෙලා තිබුණු ඒවා අලුත් format එකට හරවනවා.
-      version: 1,
+      // v0 = Coinbase INTX symbols (BTC-PERP)
+      // v1 = Binance symbols (BTCUSDT), watchlist එකක්
+      // v2 = watchlist එක වෙනුවට groups
+      version: 2,
       migrate: (state, version) => {
-        const old = state as Partial<AppState> | undefined;
-        if (version >= 1 || !old) return old as AppState;
-        const toBinance = (s: string) => s.replace(/-PERP$/, 'USDT');
-        return {
-          ...old,
-          symbol: old.symbol ? toBinance(old.symbol) : 'BTCUSDT',
-          watchlist: (old.watchlist ?? []).map(toBinance),
-        } as AppState;
+        const old = { ...(state as Partial<AppState> & { watchlist?: string[] }) };
+
+        if (version < 1) {
+          const toBinance = (s: string) => s.replace(/-PERP$/, 'USDT');
+          old.symbol = old.symbol ? toBinance(old.symbol) : 'BTCUSDT';
+          old.watchlist = (old.watchlist ?? []).map(toBinance);
+        }
+
+        if (version < 2) {
+          // කලින් තිබුණු එක list එක "Favorites" group එකක් වෙනවා.
+          const symbols = old.watchlist?.length ? old.watchlist : DEFAULT_SYMBOLS;
+          old.watchGroups = [{ id: 'favorites', name: 'Favorites', symbols }];
+          old.activeGroupId = 'favorites';
+          delete old.watchlist;
+        }
+
+        return old as AppState;
       },
     },
   ),
