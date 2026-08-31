@@ -1,8 +1,11 @@
 import type { UTCTimestamp } from 'lightweight-charts';
 import type { BandPoint } from './bandFill';
+import { computeBreakoutTargets } from './breakoutTargets';
+import { formatPrice } from './format';
 import { atrArray, bollinger, emaArray, macd, rsiArray, smaArray, vwapArray } from './indicators';
 import { computeMadLoop, type SignalMode } from './madLoop';
 import { MA_TYPES } from './movingAverages';
+import type { ChartBox, ChartSegment } from './shapes';
 import { alignHigherTimeframe, computeSniper, rsiOfPreviousClose } from './sniper';
 import type { Candle, Interval } from './types';
 
@@ -31,10 +34,12 @@ export interface IndicatorSeries {
 /** Chart එකේ candle එකක් උඩ/යට දාන label එකක් (Pine `plotshape`). */
 export interface IndicatorMarker {
   time: UTCTimestamp;
-  position: 'aboveBar' | 'belowBar';
+  /** 'atPrice*' තෝරගත්තොත් `price` එකත් දෙන්න ඕන (Pine `location.absolute`). */
+  position: 'aboveBar' | 'belowBar' | 'atPriceTop' | 'atPriceBottom' | 'atPriceMiddle';
   shape: 'arrowUp' | 'arrowDown' | 'circle' | 'square';
   color: string;
   text?: string;
+  price?: number;
 }
 
 /** Candle එකකට දාන පාට — දුන්නේ නැති කොටස් default පාටෙන්ම යනවා. */
@@ -81,6 +86,10 @@ export interface IndicatorOutput {
   barColors?: (IndicatorBarColor | undefined)[];
   markers?: IndicatorMarker[];
   bands?: IndicatorBand[];
+  /** Chart එක උඩ අඳින සෘජුකෝණාස්‍ර (Pine `box.new`). */
+  boxes?: ChartBox[];
+  /** තිරස් රේඛා + labels (Pine `line.new` / `label.new`). */
+  segments?: ChartSegment[];
   panel?: IndicatorPanel;
 }
 
@@ -182,6 +191,9 @@ const PALETTES: Record<string, { up: string; down: string }> = {
 const NEUTRAL = '#787b86';
 
 /** Pine එකේ built-in colors (color.green, color.red ...) — TradingView අගයන්ම. */
+/** AlgoAlpha script එකේ default පාට. */
+const ALGO = { green: '#00ffbb', red: '#ff1100' };
+
 const TV = {
   green: '#4CAF50',
   red: '#FF5252',
@@ -672,6 +684,127 @@ export const INDICATORS: IndicatorDef[] = [
         markers,
         panel,
       };
+    },
+  },
+  {
+    // Breakout Targets [AlgoAlpha] (© AlgoAlpha, MPL-2.0) එකේ port එක.
+    id: 'breakout',
+    name: 'Breakout Targets | AlgoAlpha',
+    pane: 'main',
+    params: [
+      { key: 'length', label: 'Range Period', default: 99, min: 4, max: 400 },
+      {
+        key: 'overlap',
+        label: 'Prevent Overlap',
+        kind: 'select',
+        default: 'On',
+        options: ['On', 'Off'],
+      },
+      { key: 'targets', label: 'Targets', kind: 'select', default: 'On', options: ['On', 'Off'] },
+      { key: 'atrPeriod', label: 'ATR', default: 14, min: 1, max: 200 },
+      { key: 'slMult', label: 'SL ×ATR', default: 5, min: 0.1, max: 50, step: 0.1 },
+      { key: 'tp1', label: 'TP1 ×', default: 0.5, min: 0.1, max: 20, step: 0.1 },
+      { key: 'tp2', label: 'TP2 ×', default: 1, min: 0.1, max: 20, step: 0.1 },
+      { key: 'tp3', label: 'TP3 ×', default: 1.5, min: 0.1, max: 20, step: 0.1 },
+    ],
+    compute: (candles, p) => {
+      const r = computeBreakoutTargets(candles, {
+        length: num(p, 'length', 99),
+        preventOverlap: str(p, 'overlap', 'On') === 'On',
+        showTargets: str(p, 'targets', 'On') === 'On',
+        atrPeriod: num(p, 'atrPeriod', 14),
+        slMultiplier: num(p, 'slMult', 5),
+        tp1Multiplier: num(p, 'tp1', 0.5),
+        tp2Multiplier: num(p, 'tp2', 1),
+        tp3Multiplier: num(p, 'tp3', 1.5),
+      });
+
+      const up = ALGO.green;
+      const down = ALGO.red;
+      const fg = '#d1d4dc'; // Pine `chart.fg_color`
+      const at = (index: number) => candles[index].time;
+
+      const boxes: ChartBox[] = [];
+      const segments: ChartSegment[] = [];
+
+      for (const b of r.boxes) {
+        const time1 = at(b.startIndex);
+        const time2 = at(b.endIndex);
+        // මුළු range එක
+        boxes.push({ time1, time2, top: b.top, bottom: b.bottom, fill: withAlpha(fg, 90) });
+        // උඩ supply තීරුවයි යට demand තීරුවයි
+        boxes.push({ time1, time2, top: b.top, bottom: b.top - b.vola, fill: withAlpha(down, 70) });
+        boxes.push({
+          time1,
+          time2,
+          top: b.bottom + b.vola,
+          bottom: b.bottom,
+          fill: withAlpha(up, 70),
+        });
+        // මැද තිත් රේඛාව
+        segments.push({
+          time1,
+          time2,
+          price: (b.top + b.bottom) / 2,
+          color: withAlpha(fg, 50),
+          width: 1,
+          dashed: true,
+        });
+      }
+
+      // Entry / SL / TP රේඛා + labels (අන්තිම breakout එකට විතරක්).
+      const t = r.trade;
+      if (t) {
+        const time1 = at(t.startIndex);
+        const time2 = at(t.endIndex);
+        const entryColor = t.dir === 1 ? up : down;
+        const line = (
+          price: number,
+          color: string,
+          text: string,
+          labelBg: string,
+        ): ChartSegment => ({
+          time1,
+          time2,
+          price,
+          color,
+          width: 3,
+          label: { text: `${text} ▸ ${formatPrice(price)}`, background: labelBg, color: '#fff' },
+        });
+
+        // SL පැත්තට රතු සෙවණැල්ලක්, TP3 පැත්තට කොළ එකක් (Pine `linefill`).
+        boxes.push({
+          time1,
+          time2,
+          top: Math.max(t.entry, t.sl),
+          bottom: Math.min(t.entry, t.sl),
+          fill: withAlpha(down, 95),
+        });
+        boxes.push({
+          time1,
+          time2,
+          top: Math.max(t.entry, t.tp3),
+          bottom: Math.min(t.entry, t.tp3),
+          fill: withAlpha(up, 95),
+        });
+
+        segments.push(line(t.entry, entryColor, 'Entry', entryColor));
+        segments.push(line(t.sl, withAlpha(down, 80), '✘ SL', withAlpha(down, 80)));
+        segments.push(line(t.tp1, withAlpha(up, 80), '✔ TP1', withAlpha(up, 80)));
+        segments.push(line(t.tp2, withAlpha(up, 80), '✔ TP2', withAlpha(up, 80)));
+        segments.push(line(t.tp3, withAlpha(up, 80), '✔ TP3', withAlpha(up, 80)));
+      }
+
+      // Breakout markers — box එකේ පතුලේ/උඩම (Pine `location.absolute`).
+      const markers: IndicatorMarker[] = r.signals.map((sig) => ({
+        time: at(sig.index),
+        position: sig.dir === 1 ? 'atPriceBottom' : 'atPriceTop',
+        shape: sig.dir === 1 ? 'arrowUp' : 'arrowDown',
+        color: sig.dir === 1 ? up : down,
+        price: sig.price,
+      }));
+
+      return { series: [], boxes, segments, markers };
     },
   },
 ];

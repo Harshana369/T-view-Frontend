@@ -12,11 +12,13 @@ import {
   type ISeriesApi,
   type ISeriesMarkersPluginApi,
   type LineWidth,
+  type SeriesMarker,
   type SeriesType,
   type Time,
 } from 'lightweight-charts';
 import { fetchCandles, subscribeCandles } from '../lib/binance';
 import { BandFillPrimitive } from '../lib/bandFill';
+import { ShapesPrimitive } from '../lib/shapes';
 import {
   indicatorById,
   type IndicatorBarColor,
@@ -271,6 +273,7 @@ export function Chart({ symbol, interval, onPrice, onLoading, onError }: ChartPr
     const priceLines: { series: ISeriesApi<SeriesType>; line: IPriceLine }[] = [];
     const markerPlugins: ISeriesMarkersPluginApi<Time>[] = [];
     const bandPrimitives: BandFillPrimitive[] = [];
+    const shapePrimitives: ShapesPrimitive[] = [];
     const nextPanels: IndicatorPanel[] = [];
     // Candles වලට පාට දාන indicator එකක් තියෙනවා නම් (Pine `barcolor()` වගේ).
     let barColors: (IndicatorBarColor | undefined)[] | null = null;
@@ -337,8 +340,34 @@ export function Chart({ symbol, interval, onPrice, onLoading, onError }: ChartPr
 
       // Long / Short labels (Pine `plotshape`) — candles series එකට.
       if (out.markers && out.markers.length > 0) {
-        markerPlugins.push(createSeriesMarkers(candleSeries, out.markers));
+        // Bar එකට උඩින්/යටින් ද, නැත්නම් හරියටම price එකකද කියලා වෙන් කරනවා.
+        const markers: SeriesMarker<Time>[] = out.markers.map((m) =>
+          m.position === 'aboveBar' || m.position === 'belowBar'
+            ? {
+                time: m.time,
+                position: m.position,
+                shape: m.shape,
+                color: m.color,
+                text: m.text,
+              }
+            : {
+                time: m.time,
+                position: m.position,
+                price: m.price ?? 0,
+                shape: m.shape,
+                color: m.color,
+                text: m.text,
+              },
+        );
+        markerPlugins.push(createSeriesMarkers(candleSeries, markers));
       }
+      // Range boxes, SL/TP රේඛා + labels (Pine `box`/`line`/`label`).
+      if ((out.boxes && out.boxes.length > 0) || (out.segments && out.segments.length > 0)) {
+        const shapes = new ShapesPrimitive(out.boxes ?? [], out.segments ?? []);
+        candleSeries.attachPrimitive(shapes);
+        shapePrimitives.push(shapes);
+      }
+
       // EMA ribbon වගේ රේඛා දෙකක් අතර පාට කරන කලාප.
       for (const band of out.bands ?? []) {
         const primitive = new BandFillPrimitive(band.points);
@@ -376,6 +405,7 @@ export function Chart({ symbol, interval, onPrice, onLoading, onError }: ChartPr
       for (const p of priceLines) p.series.removePriceLine(p.line);
       for (const plugin of markerPlugins) plugin.detach();
       for (const primitive of bandPrimitives) candleSeries.detachPrimitive(primitive);
+      for (const primitive of shapePrimitives) candleSeries.detachPrimitive(primitive);
       for (const series of created) chart.removeSeries(series);
       for (const index of [...createdPanes].sort((a, b) => b - a)) chart.removePane(index);
       // Candles වල පාට ආපහු සාමාන්‍ය කොළ/රතු වලට.
