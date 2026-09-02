@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
-import { INDICATORS, indicatorById } from '../lib/indicatorRegistry';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { INDICATORS, indicatorById, type IndicatorDef } from '../lib/indicatorRegistry';
+import type { ActiveIndicator } from '../store';
 import { useStore } from '../store';
 
 /**
@@ -16,6 +17,29 @@ export function IndicatorMenu() {
   const removeIndicator = useStore((s) => s.removeIndicator);
   const setParam = useStore((s) => s.setParam);
 
+  // defId එක registry එකේ තියෙන indicator එකකට ගැලපෙන instances විතරයි —
+  // කලින් indicator එකක් registry එකෙන් අයින් වුණාට/rename වුණාට පස්සේ
+  // localStorage එකේ ඉතුරු වුණු instance එකක් තිබුණොත් (කවදාවත් render
+  // වෙන්නේ නෑ, "badge" ගාණට විතරක් ගණන් වෙනවා), මෙතනින් අයින් වෙනවා.
+  const activeInstances = useMemo(
+    () =>
+      indicators
+        .map((instance) => ({ instance, def: indicatorById(instance.defId) }))
+        .filter(
+          (x): x is { instance: ActiveIndicator; def: IndicatorDef } => x.def !== undefined,
+        ),
+    [indicators],
+  );
+
+  // Orphan වුණු instances (def එකක් නැති) store එකෙන්ම cleanup කරනවා —
+  // ආපහු කවදාවත් render වෙන්න බැරි dead entries localStorage එකේ රැඳෙන්නේ නෑ.
+  useEffect(() => {
+    const validIds = new Set(activeInstances.map((x) => x.instance.instanceId));
+    for (const instance of indicators) {
+      if (!validIds.has(instance.instanceId)) removeIndicator(instance.instanceId);
+    }
+  }, [indicators, activeInstances, removeIndicator]);
+
   // පිටත click කළාම menu එක වහනවා.
   useEffect(() => {
     if (!open) return;
@@ -30,19 +54,19 @@ export function IndicatorMenu() {
     <div className="picker" ref={boxRef}>
       <button type="button" className="picker-btn" onClick={() => setOpen((o) => !o)}>
         Indicators
-        {indicators.length > 0 && <span className="badge">{indicators.length}</span>}
+        {activeInstances.length > 0 && (
+          <span className="badge">{activeInstances.length}</span>
+        )}
         <span className="caret">▾</span>
       </button>
 
       {open && (
         <div className="picker-pop wide">
-          {indicators.length > 0 && (
+          {activeInstances.length > 0 && (
             <>
               <div className="picker-meta">Active</div>
               <ul className="ind-active">
-                {indicators.map((instance) => {
-                  const def = indicatorById(instance.defId);
-                  if (!def) return null;
+                {activeInstances.map(({ instance, def }) => {
                   return (
                     <li key={instance.instanceId} className="ind-row">
                       <div className="ind-head">
