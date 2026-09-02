@@ -149,6 +149,11 @@ export async function fetchCandles(
   tf: Timeframe,
   want = 900,
 ): Promise<CandleSet> {
+  // apps2/server එක දුවනවා නම් Postgres එකෙන් — Binance එකට request
+  // එකක්වත් යන්නේ නෑ (DB එකේ අලුත්ම closed candle එක තියෙනවා නම්).
+  const fromDb = await fetchCandlesFromDb(symbol, tf, want);
+  if (fromDb !== null) return fromDb;
+
   const byTime = new Map<number, Candle>();
   let endMs: number | undefined;
   let priceDecimals = 2;
@@ -170,6 +175,46 @@ export async function fetchCandles(
     candles: [...byTime.values()].sort((a, b) => a.time - b.time),
     priceDecimals,
   };
+}
+
+/**
+ * apps2/server එකේ `/api/klines` (Postgres backed) එකෙන් candles ගේනවා.
+ *
+ * Scanner එකට මේක තමයි වැදගත්: coins 500+ක් cycle එකකට scan කරද්දී,
+ * server එකේ DB එකේ දැනටමත් අලුත්ම closed candle එක තියෙනවා නම් Binance
+ * එකට request එකක්වත් යන්නේ නෑ (rate limit එකට ගැටෙන එක නවතිනවා).
+ *
+ * Server එක නැති වෙලාවක (Vite dev, `npm run dev` විතරක්) `/api/klines`
+ * 404 වෙනවා — ඒ වෙලාවට කෙලින්ම Binance එකට යනවා. පළමු වතාවේදීම බලලා
+ * මතක තියාගන්නවා, හැම call එකකදීම නාස්ති request එකක් යවන්නේ නෑ.
+ */
+let dbCandlesAvailable: boolean | null = null;
+
+async function fetchCandlesFromDb(
+  symbol: string,
+  tf: Timeframe,
+  limit: number,
+): Promise<CandleSet | null> {
+  if (dbCandlesAvailable === false) return null;
+
+  const params = new URLSearchParams({
+    symbol,
+    interval: tf.code,
+    limit: String(limit),
+  });
+  try {
+    const res = await fetch(`/api/klines?${params}`);
+    if (!res.ok) {
+      // 404 = server එකක් නෑ; 5xx = server එකේ අවුලක් — දෙකටම Binance එකට යනවා.
+      if (res.status === 404) dbCandlesAvailable = false;
+      return null;
+    }
+    dbCandlesAvailable = true;
+    return (await res.json()) as CandleSet;
+  } catch {
+    dbCandlesAvailable = false;
+    return null;
+  }
 }
 
 /**
