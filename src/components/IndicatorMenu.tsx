@@ -85,7 +85,27 @@ export function IndicatorMenu() {
                         {def.params.map((param) => (
                           <label key={param.key} className="ind-param">
                             {param.label}
-                            {param.kind === 'select' ? (
+                            {param.kind === 'switch' ? (
+                              <button
+                                type="button"
+                                role="switch"
+                                aria-checked={instance.params[param.key] === 'On'}
+                                className={
+                                  instance.params[param.key] === 'On'
+                                    ? 'ind-switch on'
+                                    : 'ind-switch'
+                                }
+                                onClick={() =>
+                                  setParam(
+                                    instance.instanceId,
+                                    param.key,
+                                    instance.params[param.key] === 'On' ? 'Off' : 'On',
+                                  )
+                                }
+                              >
+                                <span className="ind-switch-knob" />
+                              </button>
+                            ) : param.kind === 'select' ? (
                               <select
                                 value={String(instance.params[param.key] ?? param.default)}
                                 onChange={(e) =>

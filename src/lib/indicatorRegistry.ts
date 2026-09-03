@@ -106,8 +106,8 @@ export type Params = Record<string, ParamValue>;
 export interface ParamDef {
   key: string;
   label: string;
-  /** දුන්නේ නැත්නම් 'number'. */
-  kind?: 'number' | 'select';
+  /** දුන්නේ නැත්නම් 'number'. 'switch' = On/Off toggle එකක්. */
+  kind?: 'number' | 'select' | 'switch';
   default: ParamValue;
   min?: number;
   max?: number;
@@ -706,6 +706,22 @@ export const INDICATORS: IndicatorDef[] = [
       { key: 'tp1', label: 'TP1 ×', default: 0.5, min: 0.1, max: 20, step: 0.1 },
       { key: 'tp2', label: 'TP2 ×', default: 1, min: 0.1, max: 20, step: 0.1 },
       { key: 'tp3', label: 'TP3 ×', default: 1.5, min: 0.1, max: 20, step: 0.1 },
+      {
+        // On කළාම, coins 526ම server එකේ පසුබිමින් scan වෙනවා — අලුත්
+        // breakout Entry එකක් හම්බවුණු ගමන් bell icon එකට notification
+        // එකක් එනවා (hooks/useBreakoutScanner.ts).
+        key: 'scanAll',
+        label: 'Scan All Coins',
+        kind: 'switch',
+        default: 'Off',
+      },
+      {
+        key: 'scanTf',
+        label: 'Scan TF',
+        kind: 'select',
+        default: '1h',
+        options: ['15m', '30m', '1h', '4h', '1d'],
+      },
     ],
     compute: (candles, p) => {
       const r = computeBreakoutTargets(candles, {

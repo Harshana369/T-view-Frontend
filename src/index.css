@@ -293,6 +293,156 @@ body {
   max-width: 128px;
 }
 
+/* Scan All Coins වගේ On/Off params වලට — dropdown එකක් නෙවෙයි, switch එකක්. */
+.ind-switch {
+  background: #0d1017;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  height: 16px;
+  padding: 1px;
+  position: relative;
+  transition: background-color 150ms ease-out;
+  width: 30px;
+}
+
+.ind-switch.on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.ind-switch-knob {
+  background: var(--text);
+  border-radius: 50%;
+  display: block;
+  height: 12px;
+  transition: transform 150ms ease-out;
+  width: 12px;
+}
+
+.ind-switch.on .ind-switch-knob {
+  transform: translateX(14px);
+}
+
+/* ------------------------------------------------------- notification bell */
+
+.notif-bell {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: var(--dim);
+  cursor: pointer;
+  display: flex;
+  font-size: 16px;
+  padding: 4px;
+  position: relative;
+}
+
+.notif-bell:hover {
+  color: var(--text);
+}
+
+/* Scan එකක් දුවනකොට හෙමින් ගැහෙනවා. */
+.notif-bell.scanning {
+  animation: notif-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes notif-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+.notif-bell .badge {
+  font-size: 9px;
+  padding: 0 4px;
+  position: absolute;
+  right: -2px;
+  top: -2px;
+}
+
+.notif-pop {
+  right: 0;
+  left: auto;
+  width: 300px;
+}
+
+.notif-empty {
+  color: var(--dim);
+  font-size: 11px;
+  padding: 16px 6px;
+  text-align: center;
+}
+
+.notif-list {
+  list-style: none;
+  margin: 4px 0 0;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 0;
+}
+
+.notif-item {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: var(--text);
+  cursor: pointer;
+  display: grid;
+  font: inherit;
+  gap: 8px;
+  grid-template-columns: 52px 1fr auto auto;
+  padding: 6px;
+  text-align: left;
+  width: 100%;
+}
+
+.notif-item:hover {
+  background: #202534;
+}
+
+.notif-dir {
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.notif-dir.up {
+  color: #26a69a;
+}
+
+.notif-dir.down {
+  color: #ef5350;
+}
+
+.notif-time {
+  color: var(--dim);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.notif-clear {
+  margin-top: 6px;
+  text-align: center;
+  width: 100%;
+}
+
+.wl-ghost {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--dim);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  padding: 4px 6px;
+}
+
+.wl-ghost:hover {
+  border-color: #3b4152;
+  color: var(--text);
+}
+
 .ind-remove {
   background: transparent;
   border: 0;

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Chart } from './components/Chart';
 import { IndicatorMenu } from './components/IndicatorMenu';
+import { NotificationCenter } from './components/NotificationCenter';
 import { SymbolPicker } from './components/SymbolPicker';
 import { TimeframeBar } from './components/TimeframeBar';
 import { Watchlist } from './components/Watchlist';
@@ -32,6 +33,7 @@ export default function App() {
           {price !== null && <span className="price">{price}</span>}
           {loading && <span className="dim">loading…</span>}
           {error && <span className="err">{error}</span>}
+          <NotificationCenter />
         </div>
       </header>
 
