@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { playAlertSound } from '../lib/sound';
 import { useNotificationStore } from '../notificationStore';
 import { useStore } from '../store';
 
@@ -95,10 +96,12 @@ export function useBreakoutScanner(): void {
         const data = (await res.json()) as ScanResponse;
         if (cancelled) return;
 
+        const fresh: BreakoutHit[] = [];
         for (const hit of data.hits) {
           const seen = lastSeen.current[hit.symbol];
           lastSeen.current[hit.symbol] = hit.key;
           if (seen === undefined || seen === hit.key) continue; // baseline / දැනටමත් දැක්ක එක
+          fresh.push(hit);
           push({
             symbol: hit.symbol,
             dir: hit.dir,
@@ -108,6 +111,13 @@ export function useBreakoutScanner(): void {
             interval: data.interval,
           });
         }
+
+        // Scan එකකින් entries කීපයක් එකවර ආවත් beep එකයි — 8ක් ආවම
+        // 8 පාරක් ගැහුවොත් අවුලක්. දිශාව අලුත්ම එකෙන් ගන්නවා.
+        if (fresh.length > 0 && useNotificationStore.getState().soundOn) {
+          playAlertSound(fresh[0].dir);
+        }
+
         setScanInfo(data.scanned, null);
       } catch (err) {
         if (!cancelled) {

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useBreakoutScanner } from '../hooks/useBreakoutScanner';
 import { formatPrice } from '../lib/format';
+import { playAlertSound } from '../lib/sound';
 import { useNotificationStore } from '../notificationStore';
 import { useStore } from '../store';
 
@@ -30,6 +31,8 @@ export function NotificationCenter() {
   const error = useNotificationStore((s) => s.error);
   const markAllRead = useNotificationStore((s) => s.markAllRead);
   const clear = useNotificationStore((s) => s.clear);
+  const soundOn = useNotificationStore((s) => s.soundOn);
+  const toggleSound = useNotificationStore((s) => s.toggleSound);
   const setSymbol = useStore((s) => s.setSymbol);
   const scanOn = useStore((s) =>
     s.indicators.some((i) => i.defId === 'breakout' && i.params.scanAll === 'On'),
@@ -64,6 +67,28 @@ export function NotificationCenter() {
 
       {open && (
         <div className="picker-pop notif-pop">
+          <div className="notif-head">
+            <span>Entry alerts</span>
+            <button
+              type="button"
+              className="notif-sound"
+              title={
+                soundOn
+                  ? 'Sound On — click කරලා off කරන්න'
+                  : 'Sound Off — click කරලා on කරන්න'
+              }
+              aria-pressed={soundOn}
+              onClick={() => {
+                // Off → On කරද්දී එකපාරක් ගහනවා: ඇහෙනවද කියලා දැනගන්නත්,
+                // browser autoplay permission එක මේ click එකෙන් ලැබෙන්නත්.
+                if (!soundOn) playAlertSound('buy');
+                toggleSound();
+              }}
+            >
+              {soundOn ? '🔊' : '🔇'}
+            </button>
+          </div>
+
           <div className="picker-meta">
             {!scanOn
               ? 'Breakout Targets එකේ "Scan All Coins" On කරන්න'

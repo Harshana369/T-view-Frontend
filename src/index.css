@@ -366,6 +366,33 @@ body {
   width: 300px;
 }
 
+/* Bell dropdown එකේ උඩ පේළිය — title එකයි sound toggle එකයි. */
+.notif-head {
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  font-size: 11px;
+  justify-content: space-between;
+  letter-spacing: 0.04em;
+  padding: 2px 2px 6px;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.notif-sound {
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px 4px;
+}
+
+.notif-sound:hover {
+  background: #202534;
+}
+
 .notif-empty {
   color: var(--dim);
   font-size: 11px;

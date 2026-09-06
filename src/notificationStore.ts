@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 
 /** Scanner එකෙන් හම්බවුණු එක breakout entry alert එකක්. */
 export interface EntryAlert {
@@ -23,41 +24,58 @@ interface NotificationState {
   lastScanAt: number | null;
   scannedCount: number;
   error: string | null;
+  /** අලුත් alert එකක් ආවම beep එකක් ගහනවද. */
+  soundOn: boolean;
   push: (alert: Omit<EntryAlert, 'id' | 'createdAt'>) => void;
   markAllRead: () => void;
   clear: () => void;
   setScanning: (scanning: boolean) => void;
   setScanInfo: (scannedCount: number, error: string | null) => void;
+  toggleSound: () => void;
 }
 
 /**
- * Breakout scanner එකෙන් හදාගන්න entry alerts ටික. Watchlist/indicators
- * වගේ browser එකේ save වෙන්නේ නෑ (session එකකට විතරයි ඕන).
+ * Breakout scanner එකෙන් හදාගන්න entry alerts ටික.
+ *
+ * Alerts ටික browser එකේ save වෙන්නේ නෑ (session එකකට විතරයි ඕන) — ඒත්
+ * sound on/off තේරීම save වෙනවා (`partialize`), refresh කරන හැම වතාවකම
+ * ආපහු mute කරන්න වෙන එක වළක්වන්න.
  */
-export const useNotificationStore = create<NotificationState>((set) => ({
-  alerts: [],
-  unread: 0,
-  scanning: false,
-  lastScanAt: null,
-  scannedCount: 0,
-  error: null,
+export const useNotificationStore = create<NotificationState>()(
+  persist(
+    (set) => ({
+      alerts: [],
+      unread: 0,
+      scanning: false,
+      lastScanAt: null,
+      scannedCount: 0,
+      error: null,
+      soundOn: true,
 
-  push: (alert) =>
-    set((s) => ({
-      alerts: [
-        {
-          ...alert,
-          id: `${alert.symbol}-${alert.entry}-${Date.now()}`,
-          createdAt: Date.now(),
-        },
-        ...s.alerts,
-      ].slice(0, MAX_ALERTS),
-      unread: s.unread + 1,
-    })),
+      push: (alert) =>
+        set((s) => ({
+          alerts: [
+            {
+              ...alert,
+              id: `${alert.symbol}-${alert.entry}-${Date.now()}`,
+              createdAt: Date.now(),
+            },
+            ...s.alerts,
+          ].slice(0, MAX_ALERTS),
+          unread: s.unread + 1,
+        })),
 
-  markAllRead: () => set({ unread: 0 }),
-  clear: () => set({ alerts: [], unread: 0 }),
-  setScanning: (scanning) => set({ scanning }),
-  setScanInfo: (scannedCount, error) =>
-    set({ scannedCount, error, lastScanAt: Date.now() }),
-}));
+      markAllRead: () => set({ unread: 0 }),
+      clear: () => set({ alerts: [], unread: 0 }),
+      setScanning: (scanning) => set({ scanning }),
+      setScanInfo: (scannedCount, error) =>
+        set({ scannedCount, error, lastScanAt: Date.now() }),
+      toggleSound: () => set((s) => ({ soundOn: !s.soundOn })),
+    }),
+    {
+      name: 'apps2-notifications',
+      // Alerts/scan state session එකට විතරයි — sound තේරීම විතරයි save වෙන්නේ.
+      partialize: (s) => ({ soundOn: s.soundOn }),
+    },
+  ),
+);
