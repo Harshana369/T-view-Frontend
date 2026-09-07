@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "apps2-trading": {
+      "command": "node",
+      "args": ["D:/trading/apps2/server/dist/mcp.js"],
+      "env": {
+        "DATABASE_URL": "postgres://trading:trading@127.0.0.1:5432/trading",
+        "REDIS_URL": "redis://127.0.0.1:6379"
+      }
+    }
+  }
+}
