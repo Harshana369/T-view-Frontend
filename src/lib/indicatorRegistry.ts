@@ -4,9 +4,11 @@ import { computeBreakoutTargets } from './breakoutTargets';
 import { formatPrice } from './format';
 import { atrArray, bollinger, emaArray, macd, rsiArray, smaArray, vwapArray } from './indicators';
 import { computeMadLoop, type SignalMode } from './madLoop';
+import { computeMirage, MIRAGE_PRESETS } from './mirageSweep';
 import { MA_TYPES } from './movingAverages';
 import type { ChartBox, ChartSegment } from './shapes';
 import { alignHigherTimeframe, computeSniper, rsiOfPreviousClose } from './sniper';
+import { computeTrendlines, zonePriceAt, type TrendZone } from './trendlines';
 import type { Candle, Interval } from './types';
 
 export interface LinePoint {
@@ -821,6 +823,398 @@ export const INDICATORS: IndicatorDef[] = [
       }));
 
       return { series: [], boxes, segments, markers };
+    },
+  },
+  {
+    // "Mirage Liquidity Sweep Pro [WillyAlgoTrader]" v1.3.1
+    // (© Willy | WillyAlgoTrader) එකේ port එක.
+    id: 'mirage',
+    name: 'Mirage Liquidity Sweep Pro',
+    pane: 'main',
+    mtf: '4h',
+    params: [
+      { key: 'swingLength', label: 'Swing Length', default: 21, min: 3, max: 100 },
+      { key: 'maxDist', label: 'Max Sweep Distance', default: 80, min: 5, max: 500 },
+      { key: 'minScore', label: 'Min Sweep Score', default: 50, min: 0, max: 100 },
+      {
+        key: 'preset',
+        label: 'Risk Preset',
+        kind: 'select',
+        default: 'Balanced',
+        options: ['Conservative', 'Balanced', 'Aggressive', 'Scalping', 'Custom'],
+      },
+      // Preset එක 'Custom' නම් විතරයි පහළ හතර වැඩ කරන්නේ.
+      { key: 'slBuffer', label: 'SL Buffer ×ATR', default: 0.25, min: 0.01, max: 3, step: 0.01 },
+      { key: 'tp1', label: 'TP1 ×R', default: 1, min: 0.1, max: 20, step: 0.1 },
+      { key: 'tp2', label: 'TP2 ×R', default: 2, min: 0.1, max: 20, step: 0.1 },
+      { key: 'tp3', label: 'TP3 ×R', default: 3, min: 0.1, max: 20, step: 0.1 },
+      { key: 'breakEven', label: 'Break-Even after TP1', kind: 'switch', default: 'On' },
+      // Sweep එකට පස්සේ structure break එකක් එනකම් බලාගෙන ඉන්නවා —
+      // signals අඩුයි, ඒත් පිරිසිදුයි. Off කළොත් sweep bar එකේම fire වෙනවා.
+      { key: 'choch', label: 'Require CHoCH', kind: 'switch', default: 'On' },
+      { key: 'minorLength', label: 'CHoCH Pivot Length', default: 8, min: 2, max: 50 },
+      { key: 'confirmWindow', label: 'Confirm Window', default: 13, min: 1, max: 100 },
+      { key: 'volume', label: 'Volume Filter', kind: 'switch', default: 'On' },
+      { key: 'volLength', label: 'Volume MA', default: 20, min: 2, max: 200 },
+      { key: 'volMult', label: 'Volume Spike ×', default: 1.5, min: 1, max: 10, step: 0.1 },
+      { key: 'htf', label: 'HTF Bias (4h)', kind: 'switch', default: 'On' },
+      { key: 'htfEma', label: 'HTF EMA', default: 50, min: 2, max: 400 },
+      { key: 'atrLength', label: 'ATR', default: 14, min: 1, max: 200 },
+      { key: 'liquidity', label: 'Liquidity Map', kind: 'switch', default: 'On' },
+      { key: 'dashboard', label: 'Dashboard', kind: 'switch', default: 'On' },
+    ],
+    compute: (candles, p, ctx) => {
+      const presetName = str(p, 'preset', 'Balanced');
+      const preset = MIRAGE_PRESETS[presetName];
+      const r = computeMirage(
+        candles,
+        {
+          swingLength: num(p, 'swingLength', 21),
+          maxSweepDistance: num(p, 'maxDist', 80),
+          minScore: num(p, 'minScore', 50),
+          requireChoch: str(p, 'choch', 'On') === 'On',
+          structurePivotLength: num(p, 'minorLength', 8),
+          confirmWindow: num(p, 'confirmWindow', 13),
+          useVolume: str(p, 'volume', 'On') === 'On',
+          volumeLength: num(p, 'volLength', 20),
+          volumeMult: num(p, 'volMult', 1.5),
+          useHtfBias: str(p, 'htf', 'On') === 'On',
+          htfEmaLength: num(p, 'htfEma', 50),
+          atrLength: num(p, 'atrLength', 14),
+          // Preset එකක් තෝරලා නම් ඒකේ අගයන්, 'Custom' නම් user ගේ අගයන්.
+          slBuffer: preset ? preset.slBuffer : num(p, 'slBuffer', 0.25),
+          tp1Mult: preset ? preset.tp1 : num(p, 'tp1', 1),
+          tp2Mult: preset ? preset.tp2 : num(p, 'tp2', 2),
+          tp3Mult: preset ? preset.tp3 : num(p, 'tp3', 3),
+          breakEvenAfterTp1: str(p, 'breakEven', 'On') === 'On',
+          equalTolerance: 0.15,
+        },
+        ctx.mtf['4h'] ?? [],
+      );
+
+      const up = '#26a69a';
+      const down = '#ef5350';
+      const gold = '#ffb300';
+      const at = (index: number) => candles[index].time;
+      const last = candles.length - 1;
+
+      const boxes: ChartBox[] = [];
+      const segments: ChartSegment[] = [];
+      const markers: IndicatorMarker[] = [];
+
+      // ── Resting liquidity — තාම sweep වෙලා නැති pools ──────────────
+      if (str(p, 'liquidity', 'On') === 'On' && candles.length > 0) {
+        // පැත්තකට 6ක් විතරයි — chart එක පිරෙන්නේ නැතුව ළඟම ඒවා.
+        const recent = (side: 'bsl' | 'ssl') => r.liquidity.filter((l) => l.side === side).slice(-6);
+        for (const l of [...recent('bsl'), ...recent('ssl')]) {
+          const color = l.side === 'bsl' ? withAlpha(down, 55) : withAlpha(up, 55);
+          segments.push({
+            time1: at(l.barIndex),
+            time2: at(last),
+            price: l.level,
+            color,
+            width: 1,
+            dashed: true,
+            label: { text: l.side === 'bsl' ? 'BSL' : 'SSL', background: color, color: '#fff' },
+          });
+        }
+
+        // EQH / EQL — සමාන swings දෙකක් අතර ඝන රේඛාවක් (liquidity magnets).
+        for (const e of r.equals.slice(-8)) {
+          segments.push({
+            time1: at(e.fromIndex),
+            time2: at(e.toIndex),
+            price: e.level,
+            color: gold,
+            width: 2,
+            label: { text: e.side.toUpperCase(), background: withAlpha(gold, 20), color: '#000' },
+          });
+        }
+      }
+
+      // ── Sweep marks — level එකෙන් එහාට ගිය wick එකේ කෙළවර ────────────
+      for (const s of r.sweeps) {
+        markers.push({
+          time: at(s.index),
+          position: s.dir === 1 ? 'atPriceBottom' : 'atPriceTop',
+          shape: 'circle',
+          color: s.dir === 1 ? up : down,
+          price: s.wick,
+          text: `✕ ${Math.round(s.score)}`,
+        });
+        // Sweep වුණු level එක — swing එකේ ඉඳන් sweep bar එක දක්වා.
+        segments.push({
+          time1: at(s.levelIndex),
+          time2: at(s.index),
+          price: s.level,
+          color: withAlpha(s.dir === 1 ? up : down, 40),
+          width: 1,
+        });
+      }
+
+      // ── Entry markers ──────────────────────────────────────────────
+      for (const t of r.trades) {
+        markers.push({
+          time: at(t.index),
+          position: t.dir === 1 ? 'belowBar' : 'aboveBar',
+          shape: t.dir === 1 ? 'arrowUp' : 'arrowDown',
+          color: t.dir === 1 ? up : down,
+          text: t.dir === 1 ? 'Long' : 'Short',
+        });
+      }
+
+      // ── අන්තිම trade එකේ SL / Entry / TP රේඛා ──────────────────────
+      const t = r.trades[r.trades.length - 1];
+      if (t) {
+        const time1 = at(t.index);
+        const time2 = at(t.endIndex);
+        const dirColor = t.dir === 1 ? up : down;
+        // Break-even වුණාට පස්සේ SL එකේ පාට මැකෙනවා — තව අවදානමක් නෑ.
+        const slColor = t.breakEven ? withAlpha(NEUTRAL, 40) : down;
+        const line = (price: number, color: string, text: string): ChartSegment => ({
+          time1,
+          time2,
+          price,
+          color,
+          width: 2,
+          label: { text: `${text} ▸ ${formatPrice(price)}`, background: color, color: '#fff' },
+        });
+
+        boxes.push({
+          time1,
+          time2,
+          top: Math.max(t.entry, t.sl),
+          bottom: Math.min(t.entry, t.sl),
+          fill: withAlpha(down, 93),
+        });
+        boxes.push({
+          time1,
+          time2,
+          top: Math.max(t.entry, t.tp3),
+          bottom: Math.min(t.entry, t.tp3),
+          fill: withAlpha(up, 93),
+        });
+
+        segments.push(line(t.entry, dirColor, t.breakEven ? 'Entry → SL (BE)' : 'Entry'));
+        segments.push(line(t.sl, slColor, '✘ SL'));
+        segments.push(line(t.tp1, withAlpha(up, t.tp1Hit ? 0 : 55), '✔ TP1'));
+        segments.push(line(t.tp2, withAlpha(up, t.tp2Hit ? 0 : 55), '✔ TP2'));
+        segments.push(line(t.tp3, withAlpha(up, t.tp3Hit ? 0 : 55), '✔ TP3'));
+
+        // Liquidity target — trade එකේ දිශාවට තියෙන ළඟම un-swept pool එක.
+        const wantSide = t.dir === 1 ? 'bsl' : 'ssl';
+        const pools = r.liquidity.filter(
+          (l) => l.side === wantSide && (t.dir === 1 ? l.level > t.entry : l.level < t.entry),
+        );
+        if (pools.length > 0) {
+          const target = pools.reduce((a, b) =>
+            Math.abs(b.level - t.entry) < Math.abs(a.level - t.entry) ? b : a,
+          );
+          segments.push({
+            time1,
+            time2: at(last),
+            price: target.level,
+            color: gold,
+            width: 2,
+            dashed: true,
+            label: {
+              text: `⌖ Liquidity ▸ ${formatPrice(target.level)}`,
+              background: withAlpha(gold, 20),
+              color: '#000',
+            },
+          });
+        }
+      }
+
+      // ── Dashboard ──────────────────────────────────────────────────
+      let panel: IndicatorPanel | undefined;
+      if (str(p, 'dashboard', 'On') === 'On') {
+        const total = r.wins + r.losses;
+        const winRate = total > 0 ? (r.wins / total) * 100 : 0;
+        const open = r.active;
+        const rows: IndicatorPanelRow[] = [
+          {
+            label: 'HTF Bias',
+            value: r.htfBullish === null ? '—' : r.htfBullish ? 'Bullish' : 'Bearish',
+            valueColor: r.htfBullish === null ? NEUTRAL : r.htfBullish ? up : down,
+          },
+          {
+            label: 'Signal',
+            value: open ? (open.dir === 1 ? 'LONG open' : 'SHORT open') : 'Flat',
+            valueColor: open ? (open.dir === 1 ? up : down) : NEUTRAL,
+          },
+        ];
+
+        const lastSweep = r.sweeps[r.sweeps.length - 1];
+        if (lastSweep) {
+          rows.push({
+            label: 'Last sweep',
+            value: `${lastSweep.dir === 1 ? 'SSL' : 'BSL'} · ${Math.round(lastSweep.score)}/100 · ${
+              last - lastSweep.index
+            } bars ago`,
+            valueColor: lastSweep.dir === 1 ? up : down,
+          });
+        }
+
+        if (open) {
+          const risk = Math.abs(open.entry - open.sl);
+          rows.push(
+            {
+              label: 'SL',
+              value: formatPrice(open.sl),
+              valueColor: open.breakEven ? NEUTRAL : down,
+            },
+            { label: 'TP1', value: formatPrice(open.tp1), valueColor: open.tp1Hit ? NEUTRAL : up },
+            { label: 'TP2', value: formatPrice(open.tp2), valueColor: open.tp2Hit ? NEUTRAL : up },
+            { label: 'TP3', value: formatPrice(open.tp3), valueColor: up },
+            {
+              label: 'R:R',
+              value: `1 : ${(Math.abs(open.tp3 - open.entry) / (risk || 1)).toFixed(2)}`,
+            },
+            { label: 'SL Dist', value: `${((risk / open.entry) * 100).toFixed(2)}%` },
+          );
+        }
+
+        rows.push(
+          { label: 'Trades', value: String(total) },
+          {
+            label: 'W – L',
+            value: `${r.wins} – ${r.losses}`,
+            valueColor: r.wins >= r.losses ? up : down,
+          },
+          {
+            label: 'Win rate',
+            value: total > 0 ? `${winRate.toFixed(0)}%` : '—',
+            valueColor: winRate >= 50 ? up : down,
+          },
+        );
+
+        if (r.form.length > 0) {
+          rows.push({
+            label: 'Form',
+            value: r.form.map((f) => (f === 'win' ? '▲' : '▼')).join(' '),
+          });
+        }
+
+        panel = { position: 'Top Right', rows };
+      }
+
+      return { series: [], boxes, segments, markers, panel };
+    },
+  },
+  {
+    // "Trendlines" (© ebecihalil, MPL-2.0) එකේ port එක.
+    id: 'trendlines',
+    name: 'Trendlines | ebecihalil',
+    pane: 'main',
+    params: [
+      { key: 'backBars', label: 'Bars to Apply', default: 300, min: 50, max: 1000 },
+      {
+        key: 'source',
+        label: 'Pivot Source',
+        kind: 'select',
+        default: 'High/Low',
+        options: ['High/Low', 'Close'],
+      },
+      { key: 'strength', label: 'Pivot Strength', default: 10, min: 5, max: 15 },
+      { key: 'touches', label: 'Min Pivot Confirmation', default: 3, min: 2, max: 8 },
+      { key: 'transparency', label: 'Zone Transparency', default: 50, min: 0, max: 100 },
+      { key: 'dashboard', label: 'Dashboard', kind: 'switch', default: 'On' },
+    ],
+    compute: (candles, p) => {
+      const r = computeTrendlines(candles, {
+        backBars: num(p, 'backBars', 300),
+        pivotSource: str(p, 'source', 'High/Low') === 'Close' ? 'Close' : 'High/Low',
+        pivotStrength: num(p, 'strength', 10),
+        minTouches: num(p, 'touches', 3),
+      });
+
+      const transparency = num(p, 'transparency', 50);
+      const series: IndicatorSeries[] = [];
+      const bands: IndicatorBand[] = [];
+
+      // Zone එකක් = ඇල රේඛා දෙකක් + ඒවා අතර පාට කරපු කලාපයක්.
+      // ChartSegment තිරස් විතරයි කරන්නේ නිසා, ඇල රේඛාවක් අඳින්නේ bar
+      // එකකට point එකක් බැගින් line series එකකින්.
+      const drawZone = (zone: TrendZone | null, color: string, key: string, label: string) => {
+        if (!zone) return;
+        const top: LinePoint[] = [];
+        const bottom: LinePoint[] = [];
+        const points: BandPoint[] = [];
+        const fill = withAlpha(color, transparency);
+
+        for (let i = zone.startIndex; i < candles.length; i++) {
+          const mid = zonePriceAt(zone, i);
+          const time = candles[i].time;
+          top.push({ time, value: mid + zone.offsetUp });
+          bottom.push({ time, value: mid + zone.offsetDown });
+          points.push({
+            time,
+            upper: mid + zone.offsetUp,
+            lower: mid + zone.offsetDown,
+            color: fill,
+          });
+        }
+
+        const edge = withAlpha(color, 50);
+        series.push({
+          key: `${key}Top`,
+          label: `${label} top`,
+          type: 'line',
+          color: edge,
+          data: top,
+          lineWidth: 1,
+          lastValueVisible: false,
+        });
+        series.push({
+          key: `${key}Bot`,
+          label: `${label} · ${zone.touches} touches`,
+          type: 'line',
+          color: edge,
+          data: bottom,
+          lineWidth: 1,
+        });
+        bands.push({ key, points });
+      };
+
+      drawZone(r.resistance, TV.red, 'resistance', 'Resistance');
+      drawZone(r.support, TV.green, 'support', 'Support');
+
+      let panel: IndicatorPanel | undefined;
+      if (str(p, 'dashboard', 'On') === 'On' && candles.length > 0) {
+        const price = candles[candles.length - 1].close;
+        const rows: IndicatorPanelRow[] = [];
+        const zoneRow = (zone: TrendZone | null, name: string, color: string) => {
+          if (!zone) {
+            rows.push({ label: name, value: 'none', valueColor: NEUTRAL });
+            return;
+          }
+          const mid = (zone.top + zone.bottom) / 2;
+          const away = ((mid - price) / price) * 100;
+          rows.push({
+            label: name,
+            value:
+              `${formatPrice(zone.bottom)} – ${formatPrice(zone.top)}  ` +
+              `(${away >= 0 ? '+' : ''}${away.toFixed(2)}%)`,
+            valueColor: color,
+          });
+          rows.push({
+            label: `${name} slope`,
+            value: `${zone.slope >= 0 ? '↗ rising' : '↘ falling'} · ${zone.touches} touches`,
+            valueColor: color,
+          });
+        };
+        zoneRow(r.resistance, 'Resistance', TV.red);
+        zoneRow(r.support, 'Support', TV.green);
+        rows.push({
+          label: 'State',
+          value: r.breakout ? 'Zone breakout' : r.touch ? 'Zone touch' : 'Inside range',
+          valueColor: r.breakout ? TV.orange : r.touch ? TV.blue : NEUTRAL,
+        });
+        panel = { position: 'Top Right', rows };
+      }
+
+      return { series, bands, panel };
     },
   },
 ];
