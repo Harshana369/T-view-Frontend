@@ -29,6 +29,8 @@ import {
 } from '../lib/drawings';
 import { chartKey, useDrawingStore } from '../drawingStore';
 import { DrawingToolbar } from './DrawingToolbar';
+import { stepDelay, useReplayStore } from '../replayStore';
+import { ReplayBar } from './ReplayBar';
 import {
   indicatorById,
   type IndicatorBarColor,
@@ -92,6 +94,28 @@ export function Chart({ symbol, interval, onPrice, onLoading, onError }: ChartPr
   // chart එක ආපහු හදන එක වළක්වන්න.
   const cbRef = useRef({ onPrice, onLoading, onError });
   cbRef.current = { onPrice, onLoading, onError };
+
+  // ------------------------------------------------------------ bar replay
+  const replayActive = useReplayStore((s) => s.active);
+  const replayCursor = useReplayStore((s) => s.cursor);
+  const replaySpeed = useReplayStore((s) => s.speed);
+  const replayPicking = useReplayStore((s) => s.picking);
+  // Live updates වලට replay එක on ද කියලා දැනගන්න ඕන (closure එකක් ඇතුළේ).
+  const replayActiveRef = useRef(replayActive);
+  replayActiveRef.current = replayActive;
+  const replayCursorRef = useRef(replayCursor);
+  replayCursorRef.current = replayCursor;
+
+  /**
+   * Chart එකේ **පේන** candles ටික. Replay එක on නම් cursor එකට කලින්
+   * තියෙන ඒවා විතරයි — indicators ගණන් හදන්නෙත් මේවමයි, එහෙම නැත්නම්
+   * indicator එකට අනාගතය පේනවා සහ replay එකෙන් වැඩක් නෑ.
+   */
+  const viewCandles = (): Candle[] => {
+    const all = candlesRef.current;
+    if (!replayActiveRef.current || all.length === 0) return all;
+    return all.slice(0, Math.min(replayCursorRef.current, all.length - 1) + 1);
+  };
 
   // ---------------------------------------------------------- chart එක හදනවා
   useEffect(() => {
@@ -197,8 +221,13 @@ export function Chart({ symbol, interval, onPrice, onLoading, onError }: ChartPr
                 continue; // පරණ candle එකක් — නොසලකා හරිනවා
               }
               changed = true;
-              candleSeries.update(c);
-              volumeSeries.update(volumeBar(c));
+              // Replay එකේදී chart එකට live candle එකක් දාන්න බෑ — cursor
+              // එකට එහා තියෙන දෙයක් පේන්න පටන් ගන්නවා. Data එක
+              // candlesRef එකට එකතු වෙනවා, පේන්නේ replay ඉවර වුණාම.
+              if (!replayActiveRef.current) {
+                candleSeries.update(c);
+                volumeSeries.update(volumeBar(c));
+              }
             }
             if (changed) {
               cbRef.current.onPrice?.(bars[bars.length - 1].close);
@@ -276,11 +305,61 @@ export function Chart({ symbol, interval, onPrice, onLoading, onError }: ChartPr
     };
   }, [symbol, mtfKey]);
 
+  // --------------------------------- replay cursor එක ගියාම chart එක අඳිනවා
+  useEffect(() => {
+    const candleSeries = candleSeriesRef.current;
+    const volumeSeries = volumeSeriesRef.current;
+    if (!candleSeries || !volumeSeries || candlesRef.current.length === 0) return;
+
+    const view = viewCandles();
+    candleSeries.setData(view);
+    volumeSeries.setData(view.map(volumeBar));
+    // Replay එකේදී price header එකේ පේන්න ඕන ඒ මොහොතේ price එක.
+    if (view.length > 0) cbRef.current.onPrice?.(view[view.length - 1].close);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [replayActive, replayCursor, chartEpoch, barsVersion]);
+
+  // Play — candle එකෙන් එකට ඉස්සරහට.
+  useEffect(() => {
+    if (!replayActive) return;
+    const timer = setInterval(() => {
+      const s = useReplayStore.getState();
+      if (!s.playing) return;
+      s.step(1, candlesRef.current.length - 1);
+    }, stepDelay(replaySpeed));
+    return () => clearInterval(timer);
+  }, [replayActive, replaySpeed]);
+
+  // Keyboard — Space play/pause, ← → candle එකින් එක, Esc අයින් වෙන්න.
+  useEffect(() => {
+    if (!replayActive) return;
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
+      const s = useReplayStore.getState();
+      const max = candlesRef.current.length - 1;
+      if (e.code === 'Space') {
+        e.preventDefault();
+        s.togglePlay();
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        s.step(1, max);
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        s.step(-1, max);
+      } else if (e.key === 'Escape') {
+        s.stop();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [replayActive]);
+
   // ------------------------------------------- indicators අඳිනවා / අයින් කරනවා
   useEffect(() => {
     const chart = chartRef.current;
     const candleSeries = candleSeriesRef.current;
-    const candles = candlesRef.current;
+    const candles = viewCandles();
     if (!chart || !candleSeries || candles.length === 0) return;
 
     const created: ISeriesApi<SeriesType>[] = [];
@@ -293,10 +372,28 @@ export function Chart({ symbol, interval, onPrice, onLoading, onError }: ChartPr
     // Candles වලට පාට දාන indicator එකක් තියෙනවා නම් (Pine `barcolor()` වගේ).
     let barColors: (IndicatorBarColor | undefined)[] | null = null;
 
+    // Replay එකේදී උසස් timeframe candles ටිකත් කපන්න ඕන — නැත්නම්
+    // Sniper එකේ 5m RSI එකට හෝ Elliott එකේ 4h bias එකට **අනාගතය පේනවා**,
+    // chart එකේ candles කපලා තිබ්බත්.
+    //
+    // ⚠️ `time <= cutoff` එක විතරක් මදි: 1h cursor එක 10:00 නම්, 08:00
+    // 4h bar එකේ time එක 10:00 ට කලින් වුණාට ඒක වහන්නේ 12:00 ට — ඒකේ
+    // high/low එකේ තාම වෙලා නැති දෙයක් තියෙනවා. ඒ නිසා තාම හැදෙමින්
+    // තියෙන අන්තිම HTF bar එකත් අයින් කරනවා (Pine `lookahead_off` වගේ).
+    const cutoff = candles[candles.length - 1].time;
+    const mtf = replayActiveRef.current
+      ? Object.fromEntries(
+          Object.entries(mtfRef.current).map(([code, bars]) => {
+            const closed = bars.filter((b) => b.time <= cutoff);
+            return [code, closed.slice(0, -1)];
+          }),
+        )
+      : mtfRef.current;
+
     for (const instance of indicators) {
       const def = indicatorById(instance.defId);
       if (!def) continue;
-      const out = def.compute(candles, instance.params, { mtf: mtfRef.current });
+      const out = def.compute(candles, instance.params, { mtf });
 
       // Series එකකට හරි 'separate' ඕන නම් විතරයි අලුත් pane එකක් හදන්නේ.
       const needsPane = out.series.some((s) => (s.pane ?? def.pane) === 'separate');
@@ -424,9 +521,10 @@ export function Chart({ symbol, interval, onPrice, onLoading, onError }: ChartPr
       for (const series of created) chart.removeSeries(series);
       for (const index of [...createdPanes].sort((a, b) => b - a)) chart.removePane(index);
       // Candles වල පාට ආපහු සාමාන්‍ය කොළ/රතු වලට.
-      if (barColors) candleSeries.setData(candlesRef.current);
+      if (barColors) candleSeries.setData(viewCandles());
     };
-  }, [indicators, barsVersion, chartEpoch, mtfVersion]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [indicators, barsVersion, chartEpoch, mtfVersion, replayActive, replayCursor]);
 
   // ------------------------------------------------------ අතින් අඳින tools
   const key = chartKey(symbol, interval);
@@ -514,6 +612,17 @@ export function Chart({ symbol, interval, onPrice, onLoading, onError }: ChartPr
       const { activeTool: tool, drawColor: color, drawWidth: width } = drawStateRef.current;
       const pt = localPoint(e);
       if (!pt) return;
+
+      // Replay එකේ පටන්ගන්න තැන තෝරන mode එක හැම දෙයකටම කලින්.
+      const replay = useReplayStore.getState();
+      if (replay.picking) {
+        e.stopPropagation();
+        e.preventDefault();
+        const index = Math.round(pt.logical);
+        replay.setCursor(Math.max(0, Math.min(candlesRef.current.length - 1, index)));
+        replay.setPicking(false);
+        return;
+      }
 
       if (tool === null) {
         // Select mode — උඩින්ම තියෙන එකේ ඉඳන් පහළට hit test.
@@ -665,9 +774,10 @@ export function Chart({ symbol, interval, onPrice, onLoading, onError }: ChartPr
   }, [chartEpoch]);
 
   return (
-    <div className={`chart-host${activeTool ? ' drawing' : ''}`}>
+    <div className={`chart-host${activeTool || replayPicking ? ' drawing' : ''}`}>
       <div ref={containerRef} className="chart" />
       <DrawingToolbar chartKey={key} count={drawings.length} />
+      <ReplayBar candles={candlesRef.current} />
       {panels.map((panel, i) => (
         <div
           key={i}

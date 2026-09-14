@@ -884,3 +884,104 @@ body {
 .chart-host.drawing .chart {
   cursor: crosshair;
 }
+
+/* ------------------------------------------------------- bar replay controls */
+.replay-open,
+.replay-bar {
+  position: absolute;
+  left: 50%;
+  bottom: 42px;
+  transform: translateX(-50%);
+  z-index: 25;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 5px 8px;
+  border-radius: 9px;
+  background: #1e222d;
+  border: 1px solid #2a2e39;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+  color: #b2b5be;
+}
+
+.replay-open {
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.replay-open:hover:not(:disabled) {
+  background: #2a2e39;
+  color: #d1d4dc;
+}
+.replay-open:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.replay-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: #b2b5be;
+  cursor: pointer;
+}
+.replay-btn:hover:not(:disabled) {
+  background: #2a2e39;
+  color: #d1d4dc;
+}
+.replay-btn.on {
+  background: #2962ff;
+  color: #fff;
+}
+.replay-btn.play {
+  color: #26a69a;
+}
+.replay-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.replay-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 3px;
+  background: #2a2e39;
+}
+
+.replay-scrub {
+  width: 170px;
+  height: 4px;
+  accent-color: #2962ff;
+  cursor: pointer;
+}
+
+.replay-when {
+  min-width: 120px;
+  font-size: 11px;
+  color: #d1d4dc;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.replay-count {
+  font-size: 11px;
+  color: #787b86;
+  font-variant-numeric: tabular-nums;
+}
+
+.replay-speed {
+  height: 24px;
+  padding: 0 4px;
+  border: 1px solid #2a2e39;
+  border-radius: 5px;
+  background: #131722;
+  color: #d1d4dc;
+  font-size: 11px;
+  cursor: pointer;
+}
