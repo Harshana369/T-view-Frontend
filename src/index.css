@@ -795,3 +795,92 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ---------------------------------------------- chart එකේ drawing toolbar */
+/* TradingView එකේ වගේ පාවෙන toolbar එකක් — ⠿ එකෙන් ඇදගෙන යන්න පුළුවන්. */
+.draw-bar {
+  position: fixed;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 5px 7px;
+  border-radius: 9px;
+  background: #1e222d;
+  border: 1px solid #2a2e39;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+}
+
+.draw-grip {
+  display: flex;
+  align-items: center;
+  padding: 2px;
+  border: 0;
+  background: none;
+  color: #5d606b;
+  cursor: grab;
+}
+.draw-grip:active {
+  cursor: grabbing;
+}
+
+.draw-tool {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: #b2b5be;
+  cursor: pointer;
+}
+.draw-tool:hover:not(:disabled) {
+  background: #2a2e39;
+  color: #d1d4dc;
+}
+.draw-tool.on {
+  background: #2962ff;
+  color: #fff;
+}
+.draw-tool:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.draw-sep {
+  width: 1px;
+  height: 18px;
+  margin: 0 3px;
+  background: #2a2e39;
+}
+
+.draw-palette {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 6px;
+  display: flex;
+  gap: 5px;
+  padding: 6px;
+  border-radius: 8px;
+  background: #1e222d;
+  border: 1px solid #2a2e39;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+}
+
+.draw-swatch {
+  width: 20px;
+  height: 20px;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  cursor: pointer;
+}
+.draw-swatch.on {
+  border-color: #fff;
+}
+
+/* Tool එකක් තෝරලා තියෙනකොට crosshair එක — අඳින්න පුළුවන් කියලා පේන්න. */
+.chart-host.drawing .chart {
+  cursor: crosshair;
+}

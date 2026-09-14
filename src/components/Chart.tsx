@@ -20,6 +20,16 @@ import { fetchCandles, subscribeCandles } from '../lib/binance';
 import { BandFillPrimitive } from '../lib/bandFill';
 import { ShapesPrimitive } from '../lib/shapes';
 import {
+  DrawingsPrimitive,
+  hitTest,
+  makeProjector,
+  POINTS_NEEDED,
+  type Drawing,
+  type DrawPoint,
+} from '../lib/drawings';
+import { chartKey, useDrawingStore } from '../drawingStore';
+import { DrawingToolbar } from './DrawingToolbar';
+import {
   indicatorById,
   type IndicatorBarColor,
   type IndicatorPanel,
@@ -32,6 +42,10 @@ const UP = '#26a69a';
 const DOWN = '#ef5350';
 const UP_VOL = 'rgba(38, 166, 154, 0.4)';
 const DOWN_VOL = 'rgba(239, 83, 80, 0.4)';
+
+/** Chart එකක drawings නැති වෙලාවට — හැම render එකකම අලුත් array එකක්
+ *  හදුනොත් effect එක නිකරුණේ ආපහු දුවනවා. */
+const EMPTY_DRAWINGS: Drawing[] = [];
 
 interface ChartProps {
   symbol: string;
@@ -414,9 +428,246 @@ export function Chart({ symbol, interval, onPrice, onLoading, onError }: ChartPr
     };
   }, [indicators, barsVersion, chartEpoch, mtfVersion]);
 
+  // ------------------------------------------------------ අතින් අඳින tools
+  const key = chartKey(symbol, interval);
+  const drawings = useDrawingStore((s) => s.byChart[key]) ?? EMPTY_DRAWINGS;
+  const activeTool = useDrawingStore((s) => s.activeTool);
+  const selectedId = useDrawingStore((s) => s.selectedId);
+  const drawColor = useDrawingStore((s) => s.color);
+  const drawWidth = useDrawingStore((s) => s.width);
+
+  const drawPrimitiveRef = useRef<DrawingsPrimitive | null>(null);
+  // Pointer handlers ඇතුළේ stale closure එකක් නොවෙන්න state එක ref එකක.
+  const drawStateRef = useRef({ drawings, activeTool, selectedId, drawColor, drawWidth, key });
+  drawStateRef.current = { drawings, activeTool, selectedId, drawColor, drawWidth, key };
+
+  // Primitive එක attach කරනවා (chart එක අලුතෙන් හැදුනොත් ආපහු).
+  useEffect(() => {
+    const candleSeries = candleSeriesRef.current;
+    if (!candleSeries) return;
+    const primitive = new DrawingsPrimitive();
+    candleSeries.attachPrimitive(primitive);
+    drawPrimitiveRef.current = primitive;
+    return () => {
+      candleSeries.detachPrimitive(primitive);
+      drawPrimitiveRef.current = null;
+    };
+  }, [chartEpoch]);
+
+  // Store එකේ වෙනසක් වුණාම primitive එකට දෙනවා.
+  useEffect(() => {
+    drawPrimitiveRef.current?.set({ drawings, selectedId });
+  }, [drawings, selectedId, chartEpoch]);
+
+  // Tool එකක් තෝරලා තියෙනකොට chart එක pan/zoom වෙන එක නවත්තනවා —
+  // නැත්නම් අඳින්න click කරනකොට chart එක ඇදෙනවා.
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    const interactive = activeTool === null;
+    chart.applyOptions({ handleScroll: interactive, handleScale: interactive });
+  }, [activeTool, chartEpoch]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    const chart = chartRef.current;
+    const candleSeries = candleSeriesRef.current;
+    if (!container || !chart || !candleSeries) return;
+
+    const store = useDrawingStore.getState;
+    /** තාම ඇඳ ඇඳ ඉන්න එක. */
+    let draft: Drawing | null = null;
+    /** ඇදගෙන යන එක. */
+    let drag: {
+      id: string;
+      /** -1 = මුළු drawing එකම, නැත්නම් handle index එක. */
+      handle: number;
+      startPoints: DrawPoint[];
+      from: DrawPoint;
+    } | null = null;
+
+    const localPoint = (e: PointerEvent | MouseEvent): DrawPoint | null => {
+      const p = makeProjector(chart, candleSeries);
+      if (!p) return null;
+      const rect = container.getBoundingClientRect();
+      const logical = p.toLogical(e.clientX - rect.left);
+      const price = p.toPrice(e.clientY - rect.top);
+      return logical === null || price === null ? null : { logical, price };
+    };
+
+    const showPreview = () => drawPrimitiveRef.current?.set({ preview: draft });
+
+    const commit = () => {
+      // Ray එකට ලක්ෂ්‍යයක්, trend/fib/position වලට දෙකක්.
+      if (!draft || draft.points.length < POINTS_NEEDED[draft.kind]) {
+        draft = null;
+        showPreview();
+        return;
+      }
+      store().add(drawStateRef.current.key, draft);
+      draft = null;
+      showPreview();
+    };
+
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.button !== 0) return;
+      const { activeTool: tool, drawColor: color, drawWidth: width } = drawStateRef.current;
+      const pt = localPoint(e);
+      if (!pt) return;
+
+      if (tool === null) {
+        // Select mode — උඩින්ම තියෙන එකේ ඉඳන් පහළට hit test.
+        const p = makeProjector(chart, candleSeries);
+        if (!p) return;
+        const rect = container.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        const list = drawStateRef.current.drawings;
+        for (let i = list.length - 1; i >= 0; i--) {
+          const hit = hitTest(list[i], p, x, y);
+          if (hit !== null) {
+            store().setSelected(list[i].id);
+            drag = { id: list[i].id, handle: hit, startPoints: list[i].points, from: pt };
+            // ඇදගෙන යනකොට chart එක pan වෙන්න දෙන්නේ නෑ. මේ handler එක
+            // capture phase එකේ දුවන නිසා, chart එකේ එකට කලින් නවත්තනවා —
+            // නැත්නම් drawing එකයි chart එකයි දෙකම එකවර ඇදෙනවා.
+            e.stopPropagation();
+            e.preventDefault();
+            chart.applyOptions({ handleScroll: false, handleScale: false });
+            container.setPointerCapture(e.pointerId);
+            return;
+          }
+        }
+        store().setSelected(null);
+        return;
+      }
+
+      if (!draft) {
+        draft = {
+          id: `d${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+          kind: tool,
+          points: [pt],
+          color,
+          width,
+        };
+        if (tool === 'brush') container.setPointerCapture(e.pointerId);
+        // Ray එකට ලක්ෂ්‍යයක් ඇති — වහාම ඉවරයි.
+        if (POINTS_NEEDED[tool] === 1) commit();
+        else showPreview();
+        return;
+      }
+
+      // දෙවෙනි (හෝ ඊළඟ) ලක්ෂ්‍යය.
+      draft.points.push(pt);
+      if (draft.points.length >= POINTS_NEEDED[draft.kind]) commit();
+      else showPreview();
+    };
+
+    const onPointerMove = (e: PointerEvent) => {
+      const pt = localPoint(e);
+      if (!pt) return;
+
+      if (drag) {
+        const { id, handle, startPoints, from } = drag;
+        const dLogical = pt.logical - from.logical;
+        const dPrice = pt.price - from.price;
+        const points =
+          handle >= 0
+            ? startPoints.map((p, i) => (i === handle ? pt : p))
+            : startPoints.map((p) => ({ logical: p.logical + dLogical, price: p.price + dPrice }));
+        store().update(drawStateRef.current.key, id, points);
+        return;
+      }
+
+      if (!draft) return;
+
+      if (draft.kind === 'brush') {
+        // ඉතාම ළඟ ලක්ෂ්‍ය එකතු කරන්නේ නෑ — නැත්නම් සිය ගාණක් එකතු වෙනවා.
+        const lastPt = draft.points[draft.points.length - 1];
+        if (Math.abs(pt.logical - lastPt.logical) > 0.3) draft.points.push(pt);
+        showPreview();
+        return;
+      }
+
+      // දෙවෙනි ලක්ෂ්‍යය cursor එක්කම චලනය වෙනවා (rubber band).
+      const preview: Drawing = { ...draft, points: [...draft.points, pt] };
+      drawPrimitiveRef.current?.set({ preview });
+    };
+
+    const onPointerUp = (e: PointerEvent) => {
+      if (drag) {
+        drag = null;
+        const interactive = drawStateRef.current.activeTool === null;
+        chart.applyOptions({ handleScroll: interactive, handleScale: interactive });
+        try {
+          container.releasePointerCapture(e.pointerId);
+        } catch {
+          // Capture එකක් තිබුණේ නැත්නම් කමක් නෑ.
+        }
+        return;
+      }
+      if (draft?.kind === 'brush') {
+        try {
+          container.releasePointerCapture(e.pointerId);
+        } catch {
+          /* ignore */
+        }
+        if (draft.points.length >= 2) {
+          store().add(drawStateRef.current.key, draft);
+        }
+        draft = null;
+        showPreview();
+      }
+    };
+
+    // Path එක ඉවර කරන්නේ double-click එකෙන්.
+    const onDoubleClick = () => {
+      if (draft && draft.kind === 'path' && draft.points.length >= 2) {
+        store().add(drawStateRef.current.key, draft);
+        draft = null;
+        showPreview();
+      }
+    };
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      // Input එකක type කරනකොට මේවා වැඩ කරන්න හොඳ නෑ.
+      if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
+
+      if (e.key === 'Escape') {
+        if (draft) {
+          draft = null;
+          showPreview();
+        }
+        store().setTool(null);
+      } else if (e.key === 'Delete' || e.key === 'Backspace') {
+        const id = drawStateRef.current.selectedId;
+        if (id) {
+          e.preventDefault();
+          store().remove(drawStateRef.current.key, id);
+        }
+      }
+    };
+
+    container.addEventListener('pointerdown', onPointerDown, { capture: true });
+    container.addEventListener('pointermove', onPointerMove);
+    container.addEventListener('pointerup', onPointerUp);
+    container.addEventListener('dblclick', onDoubleClick);
+    window.addEventListener('keydown', onKeyDown);
+
+    return () => {
+      container.removeEventListener('pointerdown', onPointerDown, { capture: true });
+      container.removeEventListener('pointermove', onPointerMove);
+      container.removeEventListener('pointerup', onPointerUp);
+      container.removeEventListener('dblclick', onDoubleClick);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [chartEpoch]);
+
   return (
-    <div className="chart-host">
+    <div className={`chart-host${activeTool ? ' drawing' : ''}`}>
       <div ref={containerRef} className="chart" />
+      <DrawingToolbar chartKey={key} count={drawings.length} />
       {panels.map((panel, i) => (
         <div
           key={i}
