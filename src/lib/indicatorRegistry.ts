@@ -1,6 +1,7 @@
 import type { UTCTimestamp } from 'lightweight-charts';
 import type { BandPoint } from './bandFill';
 import { computeBreakoutTargets } from './breakoutTargets';
+import { computeElliottWave } from './elliottWave';
 import { formatPrice } from './format';
 import { atrArray, bollinger, emaArray, macd, rsiArray, smaArray, vwapArray } from './indicators';
 import { computeMadLoop, type SignalMode } from './madLoop';
@@ -126,8 +127,8 @@ export interface IndicatorDef {
   params: ParamDef[];
   /** Separate pane එකේ අඳින reference lines (උදා: RSI 30/70). */
   levels?: number[];
-  /** මේ indicator එකට උසස් timeframe candles ඕන නම් ඒකේ code එක. */
-  mtf?: Interval;
+  /** මේ indicator එකට උසස් timeframe candles ඕන නම් ඒවායේ codes. */
+  mtf?: Interval | Interval[];
   /** Candles + params වලින් අඳින්න ඕන දේවල් හදනවා. */
   compute: (candles: Candle[], p: Params, ctx: IndicatorContext) => IndicatorOutput;
 }
@@ -1215,6 +1216,299 @@ export const INDICATORS: IndicatorDef[] = [
       }
 
       return { series, bands, panel };
+    },
+  },
+  {
+    // "Elliott Wave Detector PRO [TGTBTB]" v3.1 — MTF Edition
+    // (© GoodBadBitcoin, MPL-2.0) එකේ port එක.
+    id: 'elliott',
+    name: 'Elliott Wave Detector PRO',
+    pane: 'main',
+    // Script එකේ auto-detect table එකේ 15m–1H chart එකකට → 4H + Daily.
+    mtf: ['4h', '1d'],
+    params: [
+      { key: 'primaryLen', label: 'Primary Swing Length', default: 13, min: 3, max: 100 },
+      { key: 'subLen', label: 'Sub-Wave Swing Length', default: 5, min: 2, max: 50 },
+      { key: 'minPct', label: 'Min Swing % (Primary)', default: 5, min: 0.5, max: 30, step: 0.5 },
+      { key: 'minSubPct', label: 'Min Swing % (Sub)', default: 2, min: 0.1, max: 15, step: 0.1 },
+      { key: 'impulse', label: 'Detect Impulse', kind: 'switch', default: 'On' },
+      { key: 'diagonal', label: 'Detect Diagonal', kind: 'switch', default: 'On' },
+      { key: 'zigzag', label: 'Detect Zigzag', kind: 'switch', default: 'On' },
+      { key: 'flat', label: 'Detect Flat', kind: 'switch', default: 'On' },
+      { key: 'triangle', label: 'Detect Triangle', kind: 'switch', default: 'On' },
+      { key: 'mtfOn', label: 'MTF Validation (4h + 1d)', kind: 'switch', default: 'On' },
+      { key: 'htfLen', label: 'HTF Swing Length', default: 7, min: 3, max: 50 },
+      { key: 'htfPct', label: 'HTF Min Swing %', default: 5, min: 0.1, max: 50, step: 0.5 },
+      { key: 'htfWeight', label: 'HTF Confidence Weight', default: 0.2, min: 0, max: 0.5, step: 0.05 },
+      { key: 'waveLines', label: 'Connect Waves', kind: 'switch', default: 'On' },
+      { key: 'subWaves', label: 'Show Sub-Wave Pivots', kind: 'switch', default: 'Off' },
+      { key: 'fibRetrace', label: 'Show Retracements', kind: 'switch', default: 'On' },
+      { key: 'fibExtend', label: 'Show Extensions', kind: 'switch', default: 'On' },
+      { key: 'signals', label: 'Trade Signals', kind: 'switch', default: 'On' },
+      { key: 'panel', label: 'Info Panel', kind: 'switch', default: 'On' },
+    ],
+    compute: (candles, p, ctx) => {
+      const on = (key: string, fallback = 'On') => str(p, key, fallback) === 'On';
+      const r = computeElliottWave(
+        candles,
+        {
+          primarySwingLength: num(p, 'primaryLen', 13),
+          secondarySwingLength: num(p, 'subLen', 5),
+          minSwingPct: num(p, 'minPct', 5),
+          minSubSwingPct: num(p, 'minSubPct', 2),
+          detectImpulse: on('impulse'),
+          detectDiagonal: on('diagonal'),
+          detectZigzag: on('zigzag'),
+          detectFlat: on('flat'),
+          detectTriangle: on('triangle'),
+          useMtf: on('mtfOn'),
+          htfSwingLength: num(p, 'htfLen', 7),
+          htfMinSwingPct: num(p, 'htfPct', 5),
+          htfConfidenceWeight: num(p, 'htfWeight', 0.2),
+          enableSignals: on('signals'),
+          projectionBars: 30,
+        },
+        ctx.mtf['4h'] ?? [],
+        ctx.mtf['1d'] ?? [],
+        { retracements: on('fibRetrace'), extensions: on('fibExtend') },
+      );
+
+      const bull = '#00C853';
+      const bear = '#FF1744';
+      const corrective = '#FFC107';
+      const fibC = '#2196F3';
+      const target = '#9C27B0';
+      const at = (index: number) => candles[index].time;
+      const last = candles.length - 1;
+
+      const segments: ChartSegment[] = [];
+      const markers: IndicatorMarker[] = [];
+      const series: IndicatorSeries[] = [];
+
+      const pattern = r.pattern;
+      const waveColor = pattern?.isBullish ? bull : bear;
+
+      if (pattern) {
+        // ── Wave labels ───────────────────────────────────────────────
+        // Validate වුණු count එකකට විතරයි ඉලක්කම් — නැත්නම් pivot තිත් විතරයි.
+        for (const w of pattern.waves) {
+          const isCorrectiveWave = 'ABCDE'.includes(w.number) || !w.isMotive;
+          markers.push({
+            time: at(w.endIndex),
+            position: candles[w.endIndex].high === w.endPrice ? 'aboveBar' : 'belowBar',
+            shape: 'square',
+            color: isCorrectiveWave ? corrective : waveColor,
+            text: w.number,
+          });
+        }
+
+        // ── Wave connectors ───────────────────────────────────────────
+        if (on('waveLines')) {
+          const line: LinePoint[] = [
+            { time: at(pattern.waves[0].startIndex), value: pattern.waves[0].startPrice },
+            ...pattern.waves.map((w) => ({ time: at(w.endIndex), value: w.endPrice })),
+          ];
+          series.push({
+            key: 'waveLine',
+            label: `${pattern.patternType} (${Math.round(pattern.confidence * 100)}%)`,
+            type: 'line',
+            color: waveColor,
+            data: line,
+            lineWidth: 2,
+            lastValueVisible: false,
+          });
+        }
+
+        // ── Pattern name ──────────────────────────────────────────────
+        segments.push({
+          time1: at(pattern.startIndex),
+          time2: at(pattern.endIndex),
+          price: pattern.waves[0].startPrice,
+          color: withAlpha(waveColor, 70),
+          width: 1,
+          dashed: true,
+          label: {
+            text: `${pattern.patternType.toUpperCase()} (${Math.round(pattern.confidence * 100)}%)`,
+            background: withAlpha(waveColor, 20),
+            color: '#fff',
+          },
+        });
+      } else {
+        // Count එකක් නෑ — pivots විතරක් තිත් විදිහට. "දන්නේ නෑ" කියන එකයි
+        // වැරදි count එකක් පෙන්නනවට වඩා හොඳ.
+        for (const pv of r.primaryPivots.slice(-12)) {
+          markers.push({
+            time: at(pv.index),
+            position: pv.isHigh ? 'aboveBar' : 'belowBar',
+            shape: 'circle',
+            color: NEUTRAL,
+          });
+        }
+      }
+
+      // ── Sub-wave pivots ─────────────────────────────────────────────
+      if (on('subWaves', 'Off')) {
+        for (const pv of r.secondaryPivots.slice(-40)) {
+          markers.push({
+            time: at(pv.index),
+            position: pv.isHigh ? 'atPriceTop' : 'atPriceBottom',
+            shape: 'circle',
+            color: withAlpha(NEUTRAL, 40),
+            price: pv.price,
+          });
+        }
+      }
+
+      // ── Fibonacci levels ────────────────────────────────────────────
+      if (pattern) {
+        for (const level of r.fib) {
+          const isExt = level.kind === 'extension';
+          const color = withAlpha(isExt ? target : fibC, 55);
+          segments.push({
+            time1: at(pattern.endIndex),
+            time2: at(last),
+            price: level.price,
+            color,
+            width: 1,
+            dashed: true,
+            label: {
+              text: `${isExt ? '⤢' : '↩'} ${(level.ratio * 100).toFixed(1)}% ▸ ${formatPrice(level.price)}`,
+              background: color,
+              color: '#fff',
+            },
+          });
+        }
+      }
+
+      // ── Forecast ────────────────────────────────────────────────────
+      const f = r.forecast;
+      if (f) {
+        // Confirm වුණු forecast එකට ඝන රේඛා, නොවුණු එකට තුනී+විනිවිද.
+        const alpha = f.confirmed ? 25 : 75;
+        const width = f.confirmed ? 2 : 1;
+        const zone = (price: number, text: string, color: string) =>
+          segments.push({
+            time1: at(last),
+            time2: at(last),
+            price,
+            color: withAlpha(color, alpha),
+            width,
+            dashed: !f.confirmed,
+            label: {
+              text: `${text} ▸ ${formatPrice(price)}`,
+              background: withAlpha(color, alpha),
+              color: '#fff',
+            },
+          });
+        zone(f.targetHigh, '◎ Target', target);
+        zone(f.targetLow, '◎ Target', target);
+        zone(f.stopLevel, '✘ Invalidation', bear);
+      }
+
+      // ── Signals ─────────────────────────────────────────────────────
+      for (const s of r.signals) {
+        markers.push({
+          time: at(s.index),
+          position: s.isBullish ? 'belowBar' : 'aboveBar',
+          shape: s.isBullish ? 'arrowUp' : 'arrowDown',
+          // Gate වුණු signal එකක් අළු පාටින් — තියෙනවා, ඒත් HTF එකට එරෙහියි.
+          color: s.gated ? NEUTRAL : s.isBullish ? bull : bear,
+          text: s.gated ? `${s.kind} (gated)` : s.kind,
+        });
+      }
+
+      // ── Info panel ──────────────────────────────────────────────────
+      let panel: IndicatorPanel | undefined;
+      if (on('panel')) {
+        const rows: IndicatorPanelRow[] = [
+          { label: 'Pivots', value: String(r.primaryPivots.length) },
+          {
+            label: 'Pattern',
+            value: pattern ? pattern.patternType.toUpperCase() : 'NONE',
+            valueColor: pattern ? waveColor : NEUTRAL,
+          },
+        ];
+
+        if (pattern) {
+          const conf = Math.round(pattern.confidence * 100);
+          rows.push(
+            {
+              label: 'Confidence',
+              value: `${conf}%`,
+              valueColor: conf >= 70 ? bull : conf >= 50 ? corrective : bear,
+            },
+            {
+              label: 'Phase',
+              value:
+                pattern.patternType === 'impulse' || pattern.patternType === 'diagonal'
+                  ? 'motive'
+                  : 'corrective',
+            },
+            {
+              label: 'Alternation',
+              value: pattern.patternType === 'impulse' ? (pattern.alternationMet ? '✓' : '✗') : 'N/A',
+              valueColor: pattern.alternationMet ? bull : NEUTRAL,
+            },
+            {
+              label: 'Sub-waves',
+              value: pattern.patternType === 'impulse' ? (pattern.subWavesValid ? '✓' : '✗') : 'N/A',
+              valueColor: pattern.subWavesValid ? bull : NEUTRAL,
+            },
+            {
+              label: 'Trend',
+              value: pattern.isBullish ? 'BULLISH' : 'BEARISH',
+              valueColor: pattern.isBullish ? bull : bear,
+            },
+          );
+        }
+
+        const m = r.mtf;
+        if (m) {
+          const htfRow = (label: string, h: typeof m.htf1) => ({
+            label,
+            value:
+              h.pivotCount < 3
+                ? 'building…'
+                : `${h.pattern} (${Math.round(h.confidence * 100)}%)`,
+            valueColor: h.pivotCount < 3 ? NEUTRAL : h.isBullish ? bull : bear,
+          });
+          rows.push(htfRow('4h', m.htf1), htfRow('1d', m.htf2), {
+            label: 'Alignment',
+            value: m.label === 'N/A' ? 'N/A' : `${m.label} (${m.score.toFixed(2)})`,
+            valueColor:
+              m.label === 'ALIGNED'
+                ? bull
+                : m.label === 'CONFLICTING'
+                  ? bear
+                  : m.label === 'PARTIAL'
+                    ? corrective
+                    : NEUTRAL,
+          });
+        }
+
+        if (f) {
+          rows.push(
+            {
+              label: 'Forecast',
+              value: f.confirmed ? 'CONFIRMED' : 'UNCONFIRMED',
+              valueColor: f.confirmed ? bull : NEUTRAL,
+            },
+            { label: 'Next wave', value: f.nextWave },
+            { label: 'Rating', value: '★'.repeat(f.stars) + '☆'.repeat(5 - f.stars) },
+          );
+          if (f.mtfNote) {
+            rows.push({
+              label: 'MTF',
+              value: f.mtfNote,
+              valueColor: f.mtfNote.startsWith('⚠') ? bear : bull,
+            });
+          }
+        }
+
+        panel = { position: 'Top Right', rows };
+      }
+
+      return { series, segments, markers, panel };
     },
   },
 ];

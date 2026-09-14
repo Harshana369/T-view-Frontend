@@ -213,7 +213,8 @@ export function Chart({ symbol, interval, onPrice, onLoading, onError }: ChartPr
     const wanted = new Set<string>();
     for (const instance of indicators) {
       const def = indicatorById(instance.defId);
-      if (def?.mtf) wanted.add(def.mtf);
+      // `mtf` එකක් හෝ කිහිපයක් වෙන්න පුළුවන් (Elliott Wave එකට HTF දෙකක්).
+      if (def?.mtf) for (const code of [def.mtf].flat()) wanted.add(code);
     }
     return [...wanted].sort().join(',');
   }, [indicators]);
