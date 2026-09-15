@@ -4,7 +4,8 @@ import { computeBreakoutTargets } from './breakoutTargets';
 import { computeElliottWave } from './elliottWave';
 import { formatPrice } from './format';
 import { atrArray, bollinger, emaArray, macd, rsiArray, smaArray, vwapArray } from './indicators';
-import { computeMadLoop, type SignalMode } from './madLoop';
+import { computeLuxTrendlines } from './luxTrendlines';
+import { computeMadLoop, madSignals, type SignalMode } from './madLoop';
 import { computeMirage, MIRAGE_PRESETS } from './mirageSweep';
 import { MA_TYPES } from './movingAverages';
 import type { ChartBox, ChartSegment } from './shapes';
@@ -370,6 +371,16 @@ export const INDICATORS: IndicatorDef[] = [
       { key: 'thShort', label: 'Th Short', default: 3, min: -500, max: 500 },
       { key: 'thLongC', label: 'Th Long (C)', default: 0, min: 0, max: 1, step: 0.01 },
       { key: 'thShortC', label: 'Th Short (C)', default: 0, min: -1, max: 0, step: 0.01 },
+      // ── Noise filters ──────────────────────────────────────────────
+      // Default එක HTF ×4 + EMA 20. timeframes තුනකම (15m/4h/1d) whipsaw
+      // එක 13-16% සිට 2-3% දක්වා අඩු කරලා, follow-through එකත් වැඩි
+      // කරනවා. `Trend Filter ×bars` 0 කළොත් මුල් script එකේ හැසිරීම.
+      { key: 'htfMult', label: 'Trend Filter ×bars', default: 4, min: 0, max: 96 },
+      { key: 'htfEma', label: 'Trend Filter EMA', default: 20, min: 2, max: 200 },
+      { key: 'confirmBars', label: 'Confirm Bars', default: 0, min: 0, max: 20 },
+      { key: 'cooldownBars', label: 'Min Bars Between', default: 0, min: 0, max: 200 },
+      { key: 'adxMin', label: 'Min ADX', default: 0, min: 0, max: 50 },
+      { key: 'minMove', label: 'Min Move ×ATR', default: 0, min: 0, max: 5, step: 0.1 },
       {
         key: 'palette',
         label: 'Colors',
@@ -417,27 +428,24 @@ export const INDICATORS: IndicatorDef[] = [
       const thLong = candles.map(() => num(p, 'thLong', 23));
       const thShort = candles.map(() => num(p, 'thShort', 3));
 
-      // Score එක 0 පනිනකොට Long/Short label එක දානවා (Pine `plotshape`).
-      const markers: IndicatorMarker[] = [];
-      for (let i = 1; i < candles.length; i++) {
-        if (r.score[i] > 0 && r.score[i - 1] <= 0) {
-          markers.push({
-            time: candles[i].time,
-            position: 'belowBar',
-            shape: 'arrowUp',
-            color: up,
-            text: 'Long',
-          });
-        } else if (r.score[i] < 0 && r.score[i - 1] >= 0) {
-          markers.push({
-            time: candles[i].time,
-            position: 'aboveBar',
-            shape: 'arrowDown',
-            color: down,
-            text: 'Short',
-          });
-        }
-      }
+      // Score එක 0 පනිනකොට Long/Short label එක (Pine `plotshape`) — ඒත්
+      // noise filters හරහා. මුල් script එකේ හැම cross එකකටම label එකක්
+      // එනවා; range එකකදී ඒක වාරයක් පාසා පනිනවා. විස්තර madLoop.ts එකේ.
+      const signals = madSignals(candles, r.score, {
+        confirmBars: num(p, 'confirmBars', 0),
+        cooldownBars: num(p, 'cooldownBars', 0),
+        htfMultiplier: num(p, 'htfMult', 4),
+        htfEmaLength: num(p, 'htfEma', 20),
+        adxMin: num(p, 'adxMin', 0),
+        minMoveAtr: num(p, 'minMove', 0),
+      });
+      const markers: IndicatorMarker[] = signals.map((s) => ({
+        time: candles[s.index].time,
+        position: s.dir === 1 ? 'belowBar' : 'aboveBar',
+        shape: s.dir === 1 ? 'arrowUp' : 'arrowDown',
+        color: s.dir === 1 ? up : down,
+        text: s.dir === 1 ? 'Long' : 'Short',
+      }));
 
       return {
         series: [
@@ -1509,6 +1517,121 @@ export const INDICATORS: IndicatorDef[] = [
       }
 
       return { series, segments, markers, panel };
+    },
+  },
+  {
+    // "Trendlines with Breaks [LuxAlgo]" (© LuxAlgo, CC BY-NC-SA 4.0).
+    id: 'luxtrendlines',
+    name: 'Trendlines with Breaks | LuxAlgo',
+    pane: 'main',
+    params: [
+      { key: 'length', label: 'Swing Detection Lookback', default: 14, min: 1, max: 200 },
+      { key: 'mult', label: 'Slope', default: 1, min: 0, max: 10, step: 0.1 },
+      {
+        key: 'method',
+        label: 'Slope Calculation Method',
+        kind: 'select',
+        default: 'Atr',
+        options: ['Atr', 'Stdev', 'Linreg'],
+      },
+      // Off කළොත් real-time තොරතුර පේනවා — රේඛා අතීතයට තල්ලු වෙන්නේ නෑ.
+      { key: 'backpaint', label: 'Backpaint', kind: 'switch', default: 'On' },
+      { key: 'showExt', label: 'Show Extended Lines', kind: 'switch', default: 'On' },
+    ],
+    compute: (candles, p) => {
+      const length = num(p, 'length', 14);
+      const r = computeLuxTrendlines(candles, {
+        length,
+        mult: num(p, 'mult', 1),
+        method: str(p, 'method', 'Atr') as 'Atr' | 'Stdev' | 'Linreg',
+        backpaint: str(p, 'backpaint', 'On') === 'On',
+        showExtended: str(p, 'showExt', 'On') === 'On',
+      });
+
+      // Pine defaults: color.teal / color.red.
+      const upCss = '#008080';
+      const dnCss = '#FF0000';
+      // Pine `color = ph ? na : upCss` — reset bar එකේදී රේඛාව නොපෙනෙනවා.
+      // ඒක මෙතන කරන්නේ ඒ ලක්ෂ්‍යයට විනිවිද පාටක් දීලා.
+      const invisible = 'rgba(0, 0, 0, 0)';
+
+      const linePoints = (values: number[], gaps: boolean[], color: string): LinePoint[] => {
+        const out: LinePoint[] = [];
+        for (let i = 0; i < candles.length; i++) {
+          if (Number.isNaN(values[i])) continue;
+          out.push({ time: candles[i].time, value: values[i], color: gaps[i] ? invisible : color });
+        }
+        return out;
+      };
+
+      const series: IndicatorSeries[] = [
+        {
+          key: 'upper',
+          label: 'Upper',
+          type: 'line',
+          color: upCss,
+          data: linePoints(r.upperPlot, r.upperGap, upCss),
+          lineWidth: 1,
+          lastValueVisible: false,
+        },
+        {
+          key: 'lower',
+          label: 'Lower',
+          type: 'line',
+          color: dnCss,
+          data: linePoints(r.lowerPlot, r.lowerGap, dnCss),
+          lineWidth: 1,
+          lastValueVisible: false,
+        },
+      ];
+
+      // Extended dashed rays — Pine එකේ `extend.right` කියන්නේ අනන්තය
+      // දක්වා. මෙතන අන්තිම candle එක දක්වා අඳිනවා (ඇල රේඛාවක් නිසා
+      // bar එකකට ලක්ෂ්‍යයක් බැගින් line series එකකින්).
+      const last = candles.length - 1;
+      const rayPoints = (ray: { index: number; price: number; slope: number }): LinePoint[] => {
+        const out: LinePoint[] = [];
+        for (let i = ray.index; i <= last; i++) {
+          out.push({ time: candles[i].time, value: ray.price + ray.slope * (i - ray.index) });
+        }
+        return out;
+      };
+      if (r.upRay) {
+        series.push({
+          key: 'upRay',
+          label: '',
+          type: 'line',
+          color: withAlpha(upCss, 40),
+          data: rayPoints(r.upRay),
+          lineWidth: 1,
+          lastValueVisible: false,
+        });
+      }
+      if (r.dnRay) {
+        series.push({
+          key: 'dnRay',
+          label: '',
+          type: 'line',
+          color: withAlpha(dnCss, 40),
+          data: rayPoints(r.dnRay),
+          lineWidth: 1,
+          lastValueVisible: false,
+        });
+      }
+
+      // Breakout "B" labels — Pine `plotshape(..., location.absolute)`.
+      // මේවා backpaint වෙන්නේ නෑ (script එකේ v3 release note එකේ කියලා
+      // තියෙන විදිහට 100% non-repaint).
+      const markers: IndicatorMarker[] = r.breaks.map((b) => ({
+        time: candles[b.index].time,
+        position: b.dir === 1 ? 'atPriceBottom' : 'atPriceTop',
+        shape: b.dir === 1 ? 'arrowUp' : 'arrowDown',
+        color: b.dir === 1 ? upCss : dnCss,
+        text: 'B',
+        price: b.price,
+      }));
+
+      return { series, markers };
     },
   },
 ];

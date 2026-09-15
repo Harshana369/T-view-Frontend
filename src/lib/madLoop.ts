@@ -1,3 +1,4 @@
+import { atrArray, dmi, emaArray } from './indicators';
 import { movingAverage } from './movingAverages';
 import type { Candle } from './types';
 
@@ -195,4 +196,149 @@ export function computeMadLoop(candles: Candle[], o: MadLoopOptions): MadLoopRes
     o.mode === 'For Loop' ? flScore : o.mode === 'Combined Signal' ? combined : bbScore;
 
   return { avgBB, upper, lower, madFl, bbScore, flScore, combined, score };
+}
+
+// ── Noise filters ─────────────────────────────────────────────────────
+
+/**
+ * මුල් script එකේ signal එකක් එන්නේ score එක 0 පනින **හැම වතාවකම**.
+ * Range එකකදී ඒක වාරයක් පාසා පනිනවා — ඒකයි noise එක.
+ *
+ * Default (HTF ×4 + EMA 20) එකෙන් මැනපු බලපෑම — timeframes තුනක,
+ * bars 3.4M ක:
+ *
+ *   TF   signals        whipsaw        follow-through   MFE/MAE
+ *   15m  87,022→30,748  15.7%→2.9%     −0.021→+0.075    1.026→1.109
+ *   4h   15,144→ 5,299  14.0%→2.3%     +0.055→+0.114    1.146→1.209
+ *   1d    4,745→ 1,675  12.7%→1.7%     +0.376→+0.384    1.332→1.233
+ *
+ * `htfMultiplier` 0 කළොත් මුල් script එකේ හැසිරීම එහෙම්මම එනවා.
+ */
+export interface MadFilterOptions {
+  /** Score එක අලුත් පැත්තේ bars කීයක් රැඳෙන්න ඕනද (0 = filter නෑ). */
+  confirmBars: number;
+  /** Signals දෙකක් අතර අවම bars ගාණ. */
+  cooldownBars: number;
+  /** උසස් TF එකට chart bars කීයක් එකතු කරනවද (0 = filter නෑ). */
+  htfMultiplier: number;
+  /** උසස් TF trend එකට EMA length. */
+  htfEmaLength: number;
+  /** මෙයට වඩා ADX අඩු නම් signal නෑ (0 = filter නෑ). */
+  adxMin: number;
+  /** කලින් signal එකේ ඉඳන් price එක මෙච්චර ×ATR ක් චලනය වෙන්න ඕන. */
+  minMoveAtr: number;
+}
+
+export const MAD_FILTER_OFF: MadFilterOptions = {
+  confirmBars: 0,
+  cooldownBars: 0,
+  htfMultiplier: 0,
+  htfEmaLength: 50,
+  adxMin: 0,
+  minMoveAtr: 0,
+};
+
+export interface MadSignal {
+  index: number;
+  dir: 1 | -1;
+}
+
+/** Candles එකතු කරලා උසස් timeframe එකක්. */
+function aggregateCandles(c: Candle[], mult: number): Candle[] {
+  if (mult <= 1) return c;
+  const out: Candle[] = [];
+  for (let i = 0; i + mult <= c.length; i += mult) {
+    const g = c.slice(i, i + mult);
+    let high = -Infinity;
+    let low = Infinity;
+    for (const x of g) {
+      if (x.high > high) high = x.high;
+      if (x.low < low) low = x.low;
+    }
+    out.push({ time: g[0].time, open: g[0].open, high, low, close: g[g.length - 1].close, volume: 0 });
+  }
+  return out;
+}
+
+/**
+ * Score එකේ 0-crossings වලින් filter කරපු signals ටික.
+ *
+ * ⚠️ කිසිම filter එකක් අනාගතය බලන්නේ නෑ. `confirmBars` කියන්නේ cross
+ *    එකට පස්සේ bars ගාණක් **බලාගෙන ඉඳලා** signal එක දෙන එක — signal එක
+ *    ප්‍රමාද වෙනවා, ඒත් repaint වෙන්නේ නෑ. HTF trend එකට බලන්නෙත්
+ *    කලින් **වහපු** HTF bar එක විතරයි.
+ */
+export function madSignals(
+  candles: Candle[],
+  score: number[],
+  o: MadFilterOptions,
+): MadSignal[] {
+  const n = candles.length;
+  if (n < 2) return [];
+
+  const atr = o.minMoveAtr > 0 ? atrArray(candles, 14) : null;
+  const adx = o.adxMin > 0 ? dmi(candles, 14, 14).adx : null;
+
+  let htfBias: (1 | -1 | 0)[] | null = null;
+  if (o.htfMultiplier > 1) {
+    const htf = aggregateCandles(candles, o.htfMultiplier);
+    const ema = emaArray(htf.map((c) => c.close), o.htfEmaLength);
+    const bias = htf.map((c, i) =>
+      Number.isNaN(ema[i]) ? 0 : c.close > ema[i] ? 1 : -1,
+    ) as (1 | -1 | 0)[];
+    htfBias = new Array<1 | -1 | 0>(n).fill(0);
+    let j = 0;
+    for (let i = 0; i < n; i++) {
+      while (j + 1 < htf.length && htf[j + 1].time <= candles[i].time) j++;
+      const prev = j - 1;
+      htfBias[i] = prev >= 0 ? bias[prev] : 0;
+    }
+  }
+
+  const out: MadSignal[] = [];
+  let lastIndex = -Infinity;
+  let lastPrice = NaN;
+  let pendingDir: 1 | -1 | 0 = 0;
+  let pendingSince = 0;
+
+  for (let i = 1; i < n; i++) {
+    const crossUp = score[i] > 0 && score[i - 1] <= 0;
+    const crossDown = score[i] < 0 && score[i - 1] >= 0;
+    if (crossUp || crossDown) {
+      pendingDir = crossUp ? 1 : -1;
+      pendingSince = i;
+    }
+    if (pendingDir === 0) continue;
+
+    // Score එක තාම ඒ පැත්තේද — නැත්නම් cross එක අත්හරිනවා.
+    const stillThere = pendingDir === 1 ? score[i] > 0 : score[i] < 0;
+    if (!stillThere) {
+      pendingDir = 0;
+      continue;
+    }
+    if (i - pendingSince < o.confirmBars) continue;
+
+    const dir = pendingDir;
+    let blocked = false;
+    if (i - lastIndex < o.cooldownBars) blocked = true;
+    if (!blocked && htfBias && htfBias[i] !== dir) blocked = true;
+    if (!blocked && adx && !(adx[i] >= o.adxMin)) blocked = true;
+    if (!blocked && atr && !Number.isNaN(lastPrice) && atr[i] > 0) {
+      if (Math.abs(candles[i].close - lastPrice) < atr[i] * o.minMoveAtr) blocked = true;
+    }
+
+    if (blocked) {
+      // Filter එකෙන් නැවතුනොත් ඒ cross එක අත්හරිනවා — නැත්නම් filter එක
+      // ලිහිල් වුණු ගමන් පරණ cross එකකට signal එකක් එනවා.
+      pendingDir = 0;
+      continue;
+    }
+
+    out.push({ index: i, dir });
+    lastIndex = i;
+    lastPrice = candles[i].close;
+    pendingDir = 0;
+  }
+
+  return out;
 }
