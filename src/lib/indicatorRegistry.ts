@@ -6,6 +6,7 @@ import { formatPrice } from './format';
 import { atrArray, bollinger, emaArray, macd, rsiArray, smaArray, vwapArray } from './indicators';
 import { computeLuxTrendlines } from './luxTrendlines';
 import { computeMadLoop, madSignals, type SignalMode } from './madLoop';
+import { computeTrama } from './trama';
 import { computeMirage, MIRAGE_PRESETS } from './mirageSweep';
 import { MA_TYPES } from './movingAverages';
 import type { ChartBox, ChartSegment } from './shapes';
@@ -1632,6 +1633,42 @@ export const INDICATORS: IndicatorDef[] = [
       }));
 
       return { series, markers };
+    },
+  },
+  {
+    // "Trend Regularity Adaptive Moving Average" / TRAMA
+    // (© LuxAlgo, CC BY-NC-SA 4.0).
+    id: 'trama',
+    name: 'TRAMA | LuxAlgo',
+    pane: 'main',
+    params: [
+      { key: 'length', label: 'Length', default: 99, min: 1, max: 500 },
+      {
+        key: 'source',
+        label: 'Src',
+        kind: 'select',
+        default: 'close',
+        options: ['close', 'open', 'high', 'low', 'hl2', 'hlc3', 'ohlc4'],
+      },
+    ],
+    compute: (candles, p) => {
+      const r = computeTrama(candles, {
+        length: num(p, 'length', 99),
+        source: str(p, 'source', 'close'),
+      });
+      return {
+        series: [
+          {
+            key: 'trama',
+            label: `TRAMA ${num(p, 'length', 99)}`,
+            type: 'line',
+            // Pine `plot(ama, "Plot", #ff1100, 2)`.
+            color: '#ff1100',
+            data: toPoints(candles, r.ama),
+            lineWidth: 2,
+          },
+        ],
+      };
     },
   },
 ];
