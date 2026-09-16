@@ -366,6 +366,8 @@ export function Chart({ symbol, interval, onPrice, onLoading, onError }: ChartPr
     const createdPanes: number[] = [];
     const priceLines: { series: ISeriesApi<SeriesType>; line: IPriceLine }[] = [];
     const markerPlugins: ISeriesMarkersPluginApi<Time>[] = [];
+    // ඉහත markers ආපහු set කරන frames — cleanup එකේදී අවලංගු කරන්න.
+    const markerFrames: number[] = [];
     const bandPrimitives: BandFillPrimitive[] = [];
     const shapePrimitives: ShapesPrimitive[] = [];
     const nextPanels: IndicatorPanel[] = [];
@@ -471,7 +473,26 @@ export function Chart({ symbol, interval, onPrice, onLoading, onError }: ChartPr
                 text: m.text,
               },
         );
-        markerPlugins.push(createSeriesMarkers(candleSeries, markers));
+        const plugin = createSeriesMarkers(candleSeries, markers);
+        markerPlugins.push(plugin);
+        // lightweight-charts එකේ `setMarkers()` එක ඇතුළේ, time scale එකේ
+        // visible range එක තාම හැදිලා නැත්නම් markers **ඔක්කොම අත්හරිනවා**
+        // (`_recalculateMarkers` එකේ `_indexedMarkers = []`). ඒක ආපහු
+        // හැදෙන්නේ zoom/pan එකකින් recalculation එකක් force වුණාම විතරයි —
+        // ඒකයි "zoom කළාම විතරයි Buy පේන්නේ" කියන ගැටලුව.
+        // Layout එක ඉවර වුණාට පස්සේ ආපහු දුන්නොත් නිවැරදිව හැදෙනවා.
+        // Chart එක `autoSize` නිසා ResizeObserver එක fire වෙනකම් පළල 0 —
+        // ඒ නිසා range එක හැදෙනකම් frame කිහිපයක් ඉවසනවා.
+        let attempts = 0;
+        const reapply = () => {
+          const ready = chart.timeScale().getVisibleLogicalRange() !== null;
+          if (ready || attempts++ > 60) {
+            if (ready) plugin.setMarkers(markers);
+            return;
+          }
+          markerFrames.push(requestAnimationFrame(reapply));
+        };
+        markerFrames.push(requestAnimationFrame(reapply));
       }
       // Range boxes, SL/TP රේඛා + labels (Pine `box`/`line`/`label`).
       if ((out.boxes && out.boxes.length > 0) || (out.segments && out.segments.length > 0)) {
@@ -515,6 +536,7 @@ export function Chart({ symbol, interval, onPrice, onLoading, onError }: ChartPr
       // Cleanup: price lines, markers, series, ඊට පස්සේ panes (ලොකු index
       // එකේ ඉඳන් අයින් කරනවා — නැත්නම් index අනුපිළිවෙල මාරු වෙනවා).
       for (const p of priceLines) p.series.removePriceLine(p.line);
+      for (const frame of markerFrames) cancelAnimationFrame(frame);
       for (const plugin of markerPlugins) plugin.detach();
       for (const primitive of bandPrimitives) candleSeries.detachPrimitive(primitive);
       for (const primitive of shapePrimitives) candleSeries.detachPrimitive(primitive);

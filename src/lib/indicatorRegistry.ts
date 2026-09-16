@@ -6,6 +6,7 @@ import { formatPrice } from './format';
 import { atrArray, bollinger, emaArray, macd, rsiArray, smaArray, vwapArray } from './indicators';
 import { computeLuxTrendlines } from './luxTrendlines';
 import { computeMadLoop, madSignals, type SignalMode } from './madLoop';
+import { computeSupertrend } from './supertrend';
 import { computeTrama } from './trama';
 import { computeMirage, MIRAGE_PRESETS } from './mirageSweep';
 import { MA_TYPES } from './movingAverages';
@@ -1669,6 +1670,127 @@ export const INDICATORS: IndicatorDef[] = [
           },
         ],
       };
+    },
+  },
+  {
+    // "Supertrend" (© KivancOzbilgic) එකේ port එක.
+    id: 'supertrend',
+    name: 'Supertrend | KivancOzbilgic',
+    pane: 'main',
+    params: [
+      { key: 'periods', label: 'ATR Period', default: 10, min: 1, max: 200 },
+      {
+        key: 'source',
+        label: 'Source',
+        kind: 'select',
+        default: 'hl2',
+        options: ['hl2', 'close', 'open', 'high', 'low', 'hlc3', 'ohlc4'],
+      },
+      { key: 'mult', label: 'ATR Multiplier', default: 3, min: 0.1, max: 20, step: 0.1 },
+      // On = `atr(Periods)` (RMA), Off = `sma(tr, Periods)`.
+      { key: 'changeAtr', label: 'Change ATR Calculation Method ?', kind: 'switch', default: 'On' },
+      { key: 'showsignals', label: 'Show Buy/Sell Signals ?', kind: 'switch', default: 'On' },
+      { key: 'highlighting', label: 'Highlighter On/Off ?', kind: 'switch', default: 'On' },
+    ],
+    compute: (candles, p) => {
+      const on = (key: string, fallback = 'On') => str(p, key, fallback) === 'On';
+      const r = computeSupertrend(candles, {
+        periods: num(p, 'periods', 10),
+        source: str(p, 'source', 'hl2'),
+        multiplier: num(p, 'mult', 3),
+        changeAtr: on('changeAtr'),
+      });
+
+      // Pine defaults: color.green / color.red.
+      const green = '#008000';
+      const red = '#FF0000';
+      // Pine `plot.style_linebr` — trend එක අනිත් පැත්තේ තියෙනකොට රේඛාව
+      // **කැඩෙනවා**. lightweight-charts එකේ ඒකට ලක්ෂ්‍ය මඟහරින්න බෑ
+      // (ඒවා එකට සම්බන්ධ වෙනවා), ඒ නිසා ඒ තැන් වලට විනිවිද පාටක්.
+      const invisible = 'rgba(0, 0, 0, 0)';
+
+      const line = (values: number[], want: number, color: string): LinePoint[] => {
+        const out: LinePoint[] = [];
+        for (let i = 0; i < candles.length; i++) {
+          if (Number.isNaN(values[i])) continue;
+          // හැරෙන bar එකේ **ඇතුළට එන** කොටසත් හංගනවා — නැත්නම් අනිත්
+          // පැත්තේ ඉඳන් ඇදෙන රේඛාවක් පේනවා.
+          const starts = i === 0 || r.trend[i - 1] !== want;
+          const show = r.trend[i] === want && !starts;
+          out.push({ time: candles[i].time, value: values[i], color: show ? color : invisible });
+        }
+        return out;
+      };
+
+      const series: IndicatorSeries[] = [
+        {
+          key: 'up',
+          label: 'Up Trend',
+          type: 'line',
+          color: green,
+          data: line(r.up, 1, green),
+          lineWidth: 2,
+          lastValueVisible: false,
+        },
+        {
+          key: 'dn',
+          label: 'Down Trend',
+          type: 'line',
+          color: red,
+          data: line(r.dn, -1, red),
+          lineWidth: 2,
+          lastValueVisible: false,
+        },
+      ];
+
+      // Highlighter — Pine `fill(mPlot, upPlot)` / `fill(mPlot, dnPlot)`,
+      // ohlc4 එකයි trend රේඛාවයි අතර. v4 එකේ fill() default transp 90.
+      const bands: IndicatorBand[] = [];
+      if (on('highlighting')) {
+        const fill = (values: number[], want: number, color: string): BandPoint[] => {
+          const pts: BandPoint[] = [];
+          for (let i = 0; i < candles.length; i++) {
+            if (Number.isNaN(values[i])) continue;
+            const c = candles[i];
+            const mid = (c.open + c.high + c.low + c.close) / 4;
+            pts.push({
+              time: c.time,
+              upper: Math.max(mid, values[i]),
+              lower: Math.min(mid, values[i]),
+              color: r.trend[i] === want ? withAlpha(color, 90) : invisible,
+            });
+          }
+          return pts;
+        };
+        bands.push({ key: 'upFill', points: fill(r.up, 1, green) });
+        bands.push({ key: 'dnFill', points: fill(r.dn, -1, red) });
+      }
+
+      // Pine: circle එකක් හැමතිස්සෙම, "Buy"/"Sell" label එක switch එකෙන්.
+      const showLabels = on('showsignals');
+      const markers: IndicatorMarker[] = [];
+      for (const i of r.buySignals) {
+        markers.push({
+          time: candles[i].time,
+          position: 'atPriceBottom',
+          shape: showLabels ? 'arrowUp' : 'circle',
+          color: green,
+          price: r.up[i],
+          text: showLabels ? 'Buy' : undefined,
+        });
+      }
+      for (const i of r.sellSignals) {
+        markers.push({
+          time: candles[i].time,
+          position: 'atPriceTop',
+          shape: showLabels ? 'arrowDown' : 'circle',
+          color: red,
+          price: r.dn[i],
+          text: showLabels ? 'Sell' : undefined,
+        });
+      }
+
+      return { series, bands, markers };
     },
   },
 ];
