@@ -6,6 +6,7 @@ import { formatPrice } from './format';
 import { atrArray, bollinger, emaArray, macd, rsiArray, smaArray, vwapArray } from './indicators';
 import { computeLuxTrendlines } from './luxTrendlines';
 import { computeMadLoop, madSignals, type SignalMode } from './madLoop';
+import { computeMacdSma, type ChartArtColor } from './macdSma';
 import { computeOrderBlocks, type OrderBlock } from './orderBlocks';
 import { computeSupertrend } from './supertrend';
 import { computeTrama } from './trama';
@@ -1913,6 +1914,137 @@ export const INDICATORS: IndicatorDef[] = [
       }
 
       return { series: [], boxes, segments, markers, panel };
+    },
+  },
+  {
+    // "MACD + SMA 200 Strategy" (© ChartArt, 2015).
+    // ⚠️ MACD එක SMA වලින් — විස්තර macdSma.ts එකේ.
+    id: 'macdsma',
+    name: 'MACD + SMA 200 | ChartArt',
+    pane: 'main',
+    params: [
+      {
+        key: 'source',
+        label: 'Source',
+        kind: 'select',
+        default: 'close',
+        options: ['close', 'open', 'high', 'low', 'hl2', 'hlc3', 'ohlc4'],
+      },
+      { key: 'fast', label: 'MACD fast moving average', default: 12, min: 1, max: 200 },
+      { key: 'slow', label: 'MACD slow moving average', default: 26, min: 1, max: 400 },
+      { key: 'signal', label: 'MACD signal line moving average', default: 9, min: 1, max: 200 },
+      { key: 'veryslow', label: 'Very slow moving average', default: 200, min: 1, max: 1000 },
+      { key: 'switch1', label: 'Enable Bar Color?', kind: 'switch', default: 'On' },
+      { key: 'switch2', label: 'Enable Moving Averages?', kind: 'switch', default: 'On' },
+      { key: 'switch3', label: 'Enable Background Color?', kind: 'switch', default: 'On' },
+    ],
+    compute: (candles, p) => {
+      const on = (key: string, fallback = 'On') => str(p, key, fallback) === 'On';
+      const r = computeMacdSma(candles, {
+        source: str(p, 'source', 'close'),
+        fastLength: num(p, 'fast', 12),
+        slowLength: num(p, 'slow', 26),
+        signalLength: num(p, 'signal', 9),
+        veryslowLength: num(p, 'veryslow', 200),
+      });
+
+      // Pine v2 built-in colours.
+      const PINE: Record<ChartArtColor, string> = {
+        green: '#008000',
+        red: '#FF0000',
+        blue: '#0000FF',
+      };
+      const GRAY = '#808080';
+
+      const series: IndicatorSeries[] = [];
+      const bands: IndicatorBand[] = [];
+      const boxes: ChartBox[] = [];
+
+      if (on('switch2')) {
+        // F සහ S — දෙකේම පාට `trendcolor`, bar එකෙන් bar එකට වෙනස්.
+        const colored = (values: number[], colors: ChartArtColor[]) =>
+          toColoredPoints(candles, values, colors.map((c) => PINE[c]));
+
+        series.push({
+          key: 'fastMA',
+          label: `MACD fast ${num(p, 'fast', 12)}`,
+          type: 'line',
+          color: PINE.blue,
+          data: colored(r.fastMA, r.trendColor),
+          lineWidth: 1,
+          lastValueVisible: false,
+        });
+        series.push({
+          key: 'slowMA',
+          label: `MACD slow ${num(p, 'slow', 26)}`,
+          type: 'line',
+          color: PINE.blue,
+          data: colored(r.slowMA, r.trendColor),
+          lineWidth: 2,
+          lastValueVisible: false,
+        });
+        series.push({
+          key: 'veryslowMA',
+          label: `SMA ${num(p, 'veryslow', 200)}`,
+          type: 'line',
+          color: PINE.green,
+          data: colored(r.veryslowMA, r.maTrendColor),
+          lineWidth: 4,
+        });
+
+        // Pine `fill(F, V, color=gray)` — fastMA එකයි veryslowMA එකයි අතර.
+        const points: BandPoint[] = [];
+        for (let i = 0; i < candles.length; i++) {
+          if (Number.isNaN(r.fastMA[i]) || Number.isNaN(r.veryslowMA[i])) continue;
+          points.push({
+            time: candles[i].time,
+            upper: Math.max(r.fastMA[i], r.veryslowMA[i]),
+            lower: Math.min(r.fastMA[i], r.veryslowMA[i]),
+            color: withAlpha(GRAY, 80),
+          });
+        }
+        bands.push({ key: 'maFill', points });
+      }
+
+      // Pine `bgcolor(..., transp=80)` — signal bar එකේ පසුබිම පාට වෙනවා.
+      // මේ chart එකේ background channel එකක් නෑ, ඒ නිසා ඒ bar එකට උස
+      // box එකක්. (Boxes autoscale එකට බලපාන්නේ නෑ — primitive එකක්.)
+      if (on('switch3') && candles.length > 0) {
+        let lo = Infinity;
+        let hi = -Infinity;
+        for (const c of candles) {
+          if (c.low < lo) lo = c.low;
+          if (c.high > hi) hi = c.high;
+        }
+        const pad = (hi - lo) * 2 + hi;
+        for (let i = 0; i < candles.length; i++) {
+          const bg = r.background[i];
+          if (!bg) continue;
+          boxes.push({
+            time1: candles[i].time,
+            time2: candles[Math.min(i + 1, candles.length - 1)].time,
+            top: pad,
+            bottom: Math.max(lo - (hi - lo), 0),
+            fill: withAlpha(PINE[bg], 80),
+          });
+        }
+      }
+
+      // Pine `barcolor(bartrendcolor)`.
+      const barColors = on('switch1')
+        ? r.barColor.map((c) => ({ body: PINE[c], wick: PINE[c], border: PINE[c] }))
+        : undefined;
+
+      // Strategy entries — "Bullish" / "Bearish" (Pine `comment=`).
+      const markers: IndicatorMarker[] = r.signals.map((sig) => ({
+        time: candles[sig.index].time,
+        position: sig.dir === 1 ? 'belowBar' : 'aboveBar',
+        shape: sig.dir === 1 ? 'arrowUp' : 'arrowDown',
+        color: sig.dir === 1 ? PINE.green : PINE.red,
+        text: sig.dir === 1 ? 'Bullish' : 'Bearish',
+      }));
+
+      return { series, bands, boxes, markers, barColors };
     },
   },
 ];

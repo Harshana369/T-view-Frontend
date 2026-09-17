@@ -7,14 +7,28 @@ import type { Candle } from './types';
  * indicatorRegistry.ts එකේදී filter වෙනවා.)
  */
 
-/** Simple Moving Average — හරි හරියට period එකක සාමාන්‍යය. */
+/**
+ * Simple Moving Average — හරි හරියට period එකක සාමාන්‍යය.
+ *
+ * ⚠️ NaN තියෙන array එකකටත් හරියට වැඩ කරන්න ඕන (උදා: MACD එකේ signal
+ *    line එක — `sma(macd, 9)` එකේ macd එකේ මුල NaN). Running sum එකකට
+ *    NaN එකක් ඇතුළු වුණොත් ඒක සදහටම NaN (NaN − NaN = NaN), ඒ නිසා
+ *    window එකේ NaN කීයක් තියෙනවද කියලා වෙනම ගණන් කරනවා. Window එකේ
+ *    NaN එකක් තියෙනකම් NaN, ඒවා පිට වුණාම අගය එනවා — Pine `sma()` වගේම.
+ */
 export function smaArray(values: number[], period: number): number[] {
   const out = new Array<number>(values.length).fill(NaN);
   let sum = 0;
+  let nans = 0;
   for (let i = 0; i < values.length; i++) {
-    sum += values[i];
-    if (i >= period) sum -= values[i - period];
-    if (i >= period - 1) out[i] = sum / period;
+    if (Number.isNaN(values[i])) nans++;
+    else sum += values[i];
+    if (i >= period) {
+      const old = values[i - period];
+      if (Number.isNaN(old)) nans--;
+      else sum -= old;
+    }
+    if (i >= period - 1 && nans === 0) out[i] = sum / period;
   }
   return out;
 }
