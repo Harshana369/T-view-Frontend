@@ -87,6 +87,10 @@ export function Chart({ symbol, interval, onPrice, onLoading, onError }: ChartPr
 
   // Indicators දෙන dashboard tables ටික (chart එක උඩම render වෙනවා).
   const [panels, setPanels] = useState<IndicatorPanel[]>([]);
+  // දකුණු price scale එකේ පළල. Coin එකට අනුව decimals වෙනස් වෙන නිසා
+  // (BTC 2ක්, 1000SATS 8ක්) මේක ස්ථිර නෑ — ඒ නිසා chart එකෙන්ම මනිනවා,
+  // නැත්නම් panel එක price අංක වලට උඩින් යනවා.
+  const [priceScaleWidth, setPriceScaleWidth] = useState(0);
 
   const indicators = useStore((s) => s.indicators);
 
@@ -548,6 +552,37 @@ export function Chart({ symbol, interval, onPrice, onLoading, onError }: ChartPr
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [indicators, barsVersion, chartEpoch, mtfVersion, replayActive, replayCursor]);
 
+  // ----------------------------------------- price scale එකේ පළල මනිනවා
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    const frames: number[] = [];
+    let attempts = 0;
+    const measure = () => {
+      let w = 0;
+      try {
+        w = chart.priceScale('right').width();
+      } catch {
+        return; // chart එක අයින් වෙලා
+      }
+      if (w > 0) {
+        // සැබෑ වෙනසක් තියෙනකොට විතරයි state එක මාරු කරන්නේ — නැත්නම්
+        // render → measure → render කියලා ලූප් එකක් හැදෙනවා.
+        setPriceScaleWidth((prev) => (Math.abs(prev - w) > 0.5 ? w : prev));
+        return;
+      }
+      // Chart එක `autoSize` නිසා layout එක හැදෙනකම් පළල 0 — ඉවසනවා.
+      if (attempts++ < 60) frames.push(requestAnimationFrame(measure));
+    };
+    measure();
+    frames.push(requestAnimationFrame(measure));
+    window.addEventListener('resize', measure);
+    return () => {
+      for (const f of frames) cancelAnimationFrame(f);
+      window.removeEventListener('resize', measure);
+    };
+  }, [chartEpoch, barsVersion, panels]);
+
   // ------------------------------------------------------ අතින් අඳින tools
   const key = chartKey(symbol, interval);
   const drawings = useDrawingStore((s) => s.byChart[key]) ?? EMPTY_DRAWINGS;
@@ -804,7 +839,16 @@ export function Chart({ symbol, interval, onPrice, onLoading, onError }: ChartPr
         <div
           key={i}
           className={`chart-panel pos-${panel.position.toLowerCase().replace(' ', '-')}`}
-          style={{ background: panel.background }}
+          style={{
+            background: panel.background,
+            // දකුණු පැත්තේ panels price scale එකට **එහාට** තියෙන්න ඕන.
+            // මැනීම අසාර්ථක වුණොත් (පළල 0), සාමාන්‍ය price scale එකකට
+            // ඇති තරම් ඉඩක් තියාගන්නවා — panel එක අංක වලට උඩින් යනවාට වඩා
+            // ටිකක් වැඩිපුර ඉඩ තිබුණාට කමක් නෑ.
+            ...(panel.position.endsWith('Right')
+              ? { right: Math.max(priceScaleWidth, 64) + 12 }
+              : {}),
+          }}
         >
           {panel.rows.map((row) => (
             <div className="chart-panel-row" key={row.label}>

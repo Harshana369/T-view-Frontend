@@ -7,6 +7,7 @@ import { atrArray, bollinger, emaArray, macd, rsiArray, smaArray, vwapArray } fr
 import { computeLuxTrendlines } from './luxTrendlines';
 import { computeMadLoop, madSignals, type SignalMode } from './madLoop';
 import { computeMacdSma, type ChartArtColor } from './macdSma';
+import { computeMacdSmaTrail, TRAIL_DEFAULTS } from './macdSmaTrail';
 import { computeOrderBlocks, type OrderBlock } from './orderBlocks';
 import { computeSupertrend } from './supertrend';
 import { computeTrama } from './trama';
@@ -2045,6 +2046,167 @@ export const INDICATORS: IndicatorDef[] = [
       }));
 
       return { series, bands, boxes, markers, barColors };
+    },
+  },
+  {
+    // MACD + SMA 200 signals + trailing stop — ලාභ/පාඩුව මනිනවා.
+    // මුල් port එක ('macdsma') පිරිසිදුව තියෙනවා; මේක ඒකට උඩින්.
+    id: 'macdsmatrail',
+    name: 'MACD + SMA 200 — Trailing Backtest',
+    pane: 'main',
+    params: [
+      { key: 'initialSl', label: 'Initial SL xATR', default: 2, min: 0.2, max: 10, step: 0.1 },
+      { key: 'trailAtr', label: 'Trail xATR (0 = off)', default: 3, min: 0, max: 15, step: 0.5 },
+      { key: 'trailAfter', label: 'Trail after xR', default: 0, min: 0, max: 5, step: 0.25 },
+      { key: 'takeProfit', label: 'Take Profit xR (0 = off)', default: 0, min: 0, max: 20, step: 0.5 },
+      { key: 'exitOpp', label: 'Exit on opposite signal', kind: 'switch', default: 'On' },
+      { key: 'atrLength', label: 'ATR Length', default: 14, min: 1, max: 200 },
+      { key: 'fee', label: 'Fee % (per side)', default: 0.045, min: 0, max: 0.2, step: 0.001 },
+      { key: 'maxRisk', label: 'Max Risk %', default: 10, min: 0.5, max: 50, step: 0.5 },
+      { key: 'fast', label: 'MACD fast', default: 12, min: 1, max: 200 },
+      { key: 'slow', label: 'MACD slow', default: 26, min: 1, max: 400 },
+      { key: 'signalLen', label: 'MACD signal', default: 9, min: 1, max: 200 },
+      { key: 'veryslow', label: 'Very slow MA', default: 200, min: 1, max: 1000 },
+      { key: 'compare', label: 'Compare exit methods', kind: 'switch', default: 'On' },
+    ],
+    compute: (candles, p) => {
+      const on = (key: string, fallback = 'On') => str(p, key, fallback) === 'On';
+      const r = computeMacdSmaTrail(candles, {
+        ...TRAIL_DEFAULTS,
+        signal: {
+          source: 'close',
+          fastLength: num(p, 'fast', 12),
+          slowLength: num(p, 'slow', 26),
+          signalLength: num(p, 'signalLen', 9),
+          veryslowLength: num(p, 'veryslow', 200),
+        },
+        atrLength: num(p, 'atrLength', 14),
+        initialSlAtr: num(p, 'initialSl', 2),
+        trailAtr: num(p, 'trailAtr', 3),
+        trailAfterR: num(p, 'trailAfter', 0),
+        takeProfitR: num(p, 'takeProfit', 0),
+        exitOnOpposite: on('exitOpp'),
+        feePct: num(p, 'fee', 0.045),
+        maxRiskPct: num(p, 'maxRisk', 10),
+      });
+
+      const up = '#26a69a';
+      const down = '#ef5350';
+      const at = (index: number) => candles[index].time;
+      const series: IndicatorSeries[] = [];
+      const segments: ChartSegment[] = [];
+
+      // Entry markers — දිනුම/පාඩුව පාටින්, ප්‍රතිඵලය R වලින් text එකේ.
+      const markers: IndicatorMarker[] = r.trades.map((t) => ({
+        time: at(t.index),
+        position: t.dir === 1 ? 'belowBar' : 'aboveBar',
+        shape: t.dir === 1 ? 'arrowUp' : 'arrowDown',
+        color: t.reason === 'open' ? NEUTRAL : t.r > 0 ? up : down,
+        text: `${t.dir === 1 ? 'L' : 'S'} ${t.r >= 0 ? '+' : ''}${t.r.toFixed(2)}R`,
+      }));
+
+      // අන්තිම trade එකේ stop එක ගමන් කරපු මග — trail එක ඇහැට පේන්න.
+      const lastTrade = r.trades[r.trades.length - 1];
+      if (lastTrade) {
+        const pts: LinePoint[] = [];
+        let k = 0;
+        for (let i = lastTrade.index; i <= lastTrade.exitIndex; i++) {
+          while (k + 1 < lastTrade.stopPath.length && lastTrade.stopPath[k + 1].index <= i) k++;
+          pts.push({ time: at(i), value: lastTrade.stopPath[k].price });
+        }
+        series.push({
+          key: 'stopPath',
+          label: 'Trailing stop',
+          type: 'line',
+          color: down,
+          data: pts,
+          lineWidth: 2,
+        });
+        segments.push({
+          time1: at(lastTrade.index),
+          time2: at(lastTrade.exitIndex),
+          price: lastTrade.entry,
+          color: lastTrade.dir === 1 ? up : down,
+          width: 2,
+          label: {
+            text: `Entry > ${formatPrice(lastTrade.entry)}`,
+            background: lastTrade.dir === 1 ? up : down,
+            color: '#fff',
+          },
+        });
+      }
+
+      const s = r.stats;
+      const profitable = s.expectancy > 0;
+      const rows: IndicatorPanelRow[] = [
+        { label: 'Trades', value: String(s.trades) },
+        {
+          label: 'Result',
+          value: s.trades === 0 ? '-' : profitable ? 'PROFIT' : 'LOSS',
+          valueColor: profitable ? up : down,
+        },
+        {
+          label: 'Expectancy',
+          value: s.trades ? `${s.expectancy >= 0 ? '+' : ''}${s.expectancy.toFixed(3)}R` : '-',
+          valueColor: profitable ? up : down,
+        },
+        {
+          label: 'Total',
+          value: s.trades ? `${s.totalR >= 0 ? '+' : ''}${s.totalR.toFixed(1)}R` : '-',
+          valueColor: s.totalR > 0 ? up : down,
+        },
+        { label: 'Win rate', value: s.trades ? `${s.winRate.toFixed(1)}%` : '-' },
+        {
+          label: 'Profit factor',
+          value: s.trades ? (Number.isFinite(s.profitFactor) ? s.profitFactor.toFixed(2) : 'inf') : '-',
+          valueColor: s.profitFactor >= 1 ? up : down,
+        },
+        {
+          label: 'Avg win / loss',
+          value: s.trades ? `+${s.avgWinR.toFixed(2)}R / ${s.avgLossR.toFixed(2)}R` : '-',
+        },
+        {
+          label: 'Max drawdown',
+          value: s.trades ? `${s.maxDrawdownR.toFixed(1)}R` : '-',
+          valueColor: TV.orange,
+        },
+        // Trail එකෙන් හොඳම චලනයෙන් කොච්චරක් අල්ලගත්තාද — trail එකේ ගුණය.
+        {
+          label: 'Trail capture',
+          value: s.trades ? `${(s.captureRatio * 100).toFixed(0)}% of best move` : '-',
+        },
+        {
+          label: 'Exits',
+          value:
+            `stop ${s.byReason.stop} / trail ${s.byReason.trail} / ` +
+            `TP ${s.byReason.target} / flip ${s.byReason.opposite}`,
+        },
+      ];
+
+      if (on('compare') && r.comparison.length > 0) {
+        rows.push({ label: '', value: '' });
+        rows.push({
+          label: 'exit method',
+          value: 'expectancy / total / win',
+          labelColor: NEUTRAL,
+          valueColor: NEUTRAL,
+        });
+        for (const v of r.comparison) {
+          const ok = v.stats.expectancy > 0;
+          rows.push({
+            label: `  ${v.name}`,
+            value:
+              v.stats.trades === 0
+                ? '-'
+                : `${v.stats.expectancy >= 0 ? '+' : ''}${v.stats.expectancy.toFixed(3)}R / ` +
+                  `${v.stats.totalR >= 0 ? '+' : ''}${v.stats.totalR.toFixed(1)}R / ` +
+                  `${v.stats.winRate.toFixed(0)}%`,
+            valueColor: ok ? up : down,
+          });
+        }
+      }
+
+      return { series, segments, markers, panel: { position: 'Top Right', rows } };
     },
   },
 ];

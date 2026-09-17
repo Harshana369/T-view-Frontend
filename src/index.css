@@ -515,7 +515,12 @@ body {
 /* Pine `table.new()` වලට අදාළ එක — chart එක උඩම පාවෙන පොඩි table එකක්.
    Click chart එකටම යන්න ඕන නිසා pointer-events: none. */
 .chart-panel {
+  /* Chart එකේ පසුබිමේ පාටම, ටිකක් විනිවිද — candles පේනවා, ඒත් අකුරු
+     කියවන්න පුළුවන්. (මේක නැතුව price scale එකේ අංක panel එක හරහා
+     පේනවා, කියවන්න බැරි වෙනවා.) */
+  background: rgba(19, 23, 34, 0.92);
   border: 1px solid rgba(120, 123, 134, 0.4);
+  border-radius: 4px;
   font-size: 11px;
   pointer-events: none;
   position: absolute;
