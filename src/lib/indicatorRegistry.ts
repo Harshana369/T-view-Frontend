@@ -6,6 +6,7 @@ import { formatPrice } from './format';
 import { atrArray, bollinger, emaArray, macd, rsiArray, smaArray, vwapArray } from './indicators';
 import { computeLuxTrendlines } from './luxTrendlines';
 import { computeMadLoop, madSignals, type SignalMode } from './madLoop';
+import { computeOrderBlocks, type OrderBlock } from './orderBlocks';
 import { computeSupertrend } from './supertrend';
 import { computeTrama } from './trama';
 import { computeMirage, MIRAGE_PRESETS } from './mirageSweep';
@@ -1791,6 +1792,127 @@ export const INDICATORS: IndicatorDef[] = [
       }
 
       return { series, bands, markers };
+    },
+  },
+  {
+    // "Order Block Finder (Experimental)" (© wugamlo, MPL-2.0).
+    // ⚠️ අර්ථ දැක්වීමෙන්ම repaint වෙනවා — විස්තර orderBlocks.ts එකේ.
+    id: 'orderblocks',
+    name: 'Order Block Finder | wugamlo',
+    pane: 'main',
+    params: [
+      {
+        key: 'colors',
+        label: 'Color Scheme',
+        kind: 'select',
+        default: 'DARK',
+        options: ['DARK', 'BRIGHT'],
+      },
+      { key: 'periods', label: 'Relevant Periods to identify OB', default: 5, min: 1, max: 50 },
+      {
+        key: 'threshold',
+        label: 'Min. Percent move to identify OB',
+        default: 0,
+        min: 0,
+        max: 100,
+        step: 0.1,
+      },
+      { key: 'usewicks', label: 'Use whole range [High/Low] for OB marking?', kind: 'switch', default: 'Off' },
+      { key: 'showbull', label: 'Show latest Bullish Channel?', kind: 'switch', default: 'On' },
+      { key: 'showbear', label: 'Show latest Bearish Channel?', kind: 'switch', default: 'On' },
+      { key: 'infopan', label: 'Show Latest OB Panel?', kind: 'switch', default: 'Off' },
+    ],
+    compute: (candles, p) => {
+      const on = (key: string, fallback = 'On') => str(p, key, fallback) === 'On';
+      const periods = num(p, 'periods', 5);
+      const r = computeOrderBlocks(candles, {
+        periods,
+        threshold: num(p, 'threshold', 0),
+        useWicks: on('usewicks', 'Off'),
+      });
+
+      // Pine: DARK → white/blue, BRIGHT → green/red (v4 built-in colours).
+      const dark = str(p, 'colors', 'DARK') === 'DARK';
+      const bullColor = dark ? '#FFFFFF' : '#4CAF50';
+      const bearColor = dark ? '#2196F3' : '#FF5252';
+
+      const at = (index: number) => candles[index].time;
+      const last = candles.length - 1;
+      const boxes: ChartBox[] = [];
+      const segments: ChartSegment[] = [];
+      const markers: IndicatorMarker[] = [];
+
+      for (const b of r.blocks) {
+        const color = b.dir === 1 ? bullColor : bearColor;
+        // Pine එකේ මේක plot දෙකක් (linewidth 3) + ඒවා අතර `fill(transp=0)` —
+        // ඒ කියන්නේ OB candle එකේ තියෙන ඝන සිරස් පටියක්. මෙතන ඒක candle
+        // එකක පළලට box එකක් විදිහට (1px එකකට වඩා පේනවා).
+        boxes.push({
+          time1: at(b.index),
+          time2: at(Math.min(b.index + 1, last)),
+          top: b.high,
+          bottom: b.low,
+          fill: color,
+        });
+        // "Bullish OB" / "Bearish OB" — OB candle එකට යටින්/උඩින්.
+        markers.push({
+          time: at(b.index),
+          position: b.dir === 1 ? 'belowBar' : 'aboveBar',
+          shape: b.dir === 1 ? 'arrowUp' : 'arrowDown',
+          color,
+          text: b.dir === 1 ? 'Bullish OB' : 'Bearish OB',
+        });
+        // Equilibrium — Pine `shape.cross` at `location.absolute`.
+        markers.push({
+          time: at(b.index),
+          position: 'atPriceMiddle',
+          shape: 'circle',
+          color,
+          price: b.avg,
+        });
+      }
+
+      // අන්තිම OB එකේ channel — avg ඝනයි, high/low තිත්.
+      // Pine එකේ මේවා detect වුණු bar එකේ ඉඳන් දිගු වෙනවා (screenshot එකේ
+      // පේන විදිහට දකුණට, අන්තිම candle එක පනිනකම්).
+      const channel = (b: OrderBlock | null, color: string) => {
+        if (!b) return;
+        const time1 = at(Math.min(b.detectedAt, last));
+        const time2 = at(last);
+        const line = (price: number, dashed: boolean): ChartSegment => ({
+          time1,
+          time2,
+          price,
+          color,
+          width: 1,
+          dashed,
+        });
+        segments.push(line(b.avg, false));
+        segments.push(line(b.high, true));
+        segments.push(line(b.low, true));
+      };
+      if (on('showbull')) channel(r.latestBull, bullColor);
+      if (on('showbear')) channel(r.latestBear, bearColor);
+
+      // Pine "InfoPanel" — අන්තිම OB දෙකේ අගයන්.
+      let panel: IndicatorPanel | undefined;
+      if (on('infopan', 'Off')) {
+        const rows: IndicatorPanelRow[] = [];
+        const add = (b: OrderBlock | null, name: string, color: string) => {
+          if (!b) {
+            rows.push({ label: name, value: '—', valueColor: NEUTRAL });
+            return;
+          }
+          rows.push({ label: `${name} - High`, value: formatPrice(b.high), valueColor: color });
+          rows.push({ label: `${name} - Avg`, value: formatPrice(b.avg), valueColor: color });
+          rows.push({ label: `${name} - Low`, value: formatPrice(b.low), valueColor: color });
+        };
+        add(r.latestBull, 'Bullish', bullColor);
+        add(r.latestBear, 'Bearish', bearColor);
+        panel = { position: 'Top Right', rows };
+      }
+
+      return { series: [], boxes, segments, markers, panel };
     },
   },
 ];
