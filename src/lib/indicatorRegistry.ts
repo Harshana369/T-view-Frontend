@@ -1,5 +1,6 @@
 import type { UTCTimestamp } from 'lightweight-charts';
 import type { BandPoint } from './bandFill';
+import { computeBbRsi } from './bbRsi';
 import { computeBreakoutTargets } from './breakoutTargets';
 import { computeElliottWave } from './elliottWave';
 import { formatPrice } from './format';
@@ -2279,6 +2280,122 @@ export const INDICATORS: IndicatorDef[] = [
       }
 
       return { series, segments, markers, panel: { position: 'Top Right', rows } };
+    },
+  },
+  {
+    // "Bollinger + RSI, Double Strategy v1.1" (© ChartArt, 2016).
+    id: 'bbrsi',
+    name: 'Bollinger + RSI Double Strategy | ChartArt',
+    pane: 'main',
+    params: [
+      { key: 'rsiLength', label: 'RSI Period Length', default: 6, min: 1, max: 200 },
+      { key: 'bbLength', label: 'Bollinger Period Length', default: 200, min: 1, max: 1000 },
+      // මුල් script එකේ මේක ස්ථිර 2ක් (input එකක් නෙවෙයි) — ඒත් මාරු
+      // කරන්න පුළුවන් නම් ප්‍රයෝජනවත්, ඒ නිසා දාලා තියෙනවා.
+      { key: 'bbMult', label: 'Bollinger Std Dev', default: 2, min: 0.1, max: 10, step: 0.1 },
+      { key: 'switch1', label: 'Enable Bar Color?', kind: 'switch', default: 'On' },
+      { key: 'switch2', label: 'Enable Background Color?', kind: 'switch', default: 'On' },
+    ],
+    compute: (candles, p) => {
+      const on = (key: string, fallback = 'On') => str(p, key, fallback) === 'On';
+      const r = computeBbRsi(candles, {
+        rsiLength: num(p, 'rsiLength', 6),
+        bbLength: num(p, 'bbLength', 200),
+        bbMult: num(p, 'bbMult', 2),
+      });
+
+      // Pine v2 built-in colours.
+      const AQUA = '#00FFFF';
+      const SILVER = '#C0C0C0';
+      const RED = '#FF0000';
+      const GREEN = '#008000';
+
+      const series: IndicatorSeries[] = [
+        {
+          key: 'basis',
+          label: `BB Basis ${num(p, 'bbLength', 200)}`,
+          type: 'line',
+          color: AQUA,
+          data: toPoints(candles, r.basis),
+          lineWidth: 1,
+        },
+        {
+          key: 'upper',
+          label: 'BB Upper',
+          type: 'line',
+          color: SILVER,
+          data: toPoints(candles, r.upper),
+          lineWidth: 1,
+          lastValueVisible: false,
+        },
+        {
+          key: 'lower',
+          label: 'BB Lower',
+          type: 'line',
+          color: SILVER,
+          data: toPoints(candles, r.lower),
+          lineWidth: 1,
+          lastValueVisible: false,
+        },
+      ];
+
+      // Pine `fill(p1, p2)` — band දෙක අතර. v2 එකේ default පාට නිල්-ඉරි.
+      const bandPoints: BandPoint[] = [];
+      for (let i = 0; i < candles.length; i++) {
+        if (Number.isNaN(r.upper[i]) || Number.isNaN(r.lower[i])) continue;
+        bandPoints.push({
+          time: candles[i].time,
+          upper: r.upper[i],
+          lower: r.lower[i],
+          color: withAlpha('#2196F3', 92),
+        });
+      }
+      const bands: IndicatorBand[] = [{ key: 'bbFill', points: bandPoints }];
+
+      // Pine `barcolor(TrendColor)` — TrendColor na නම් bar එක එහෙම්මම.
+      const barColors = on('switch1')
+        ? r.trendColor.map((c) =>
+            c === null
+              ? undefined
+              : { body: c === 'red' ? RED : GREEN, wick: c === 'red' ? RED : GREEN },
+          )
+        : undefined;
+
+      // Pine `bgcolor(TrendColor, transp=50)` — ඒ bar එකේ පසුබිම.
+      // Background channel එකක් නෑ, ඒ නිසා උස box එකක්. (Boxes autoscale
+      // එකට බලපාන්නේ නෑ — primitive එකක්.)
+      const boxes: ChartBox[] = [];
+      if (on('switch2') && candles.length > 0) {
+        let lo = Infinity;
+        let hi = -Infinity;
+        for (const c of candles) {
+          if (c.low < lo) lo = c.low;
+          if (c.high > hi) hi = c.high;
+        }
+        const span = hi - lo;
+        for (let i = 0; i < candles.length; i++) {
+          const tc = r.trendColor[i];
+          if (!tc) continue;
+          boxes.push({
+            time1: candles[i].time,
+            time2: candles[Math.min(i + 1, candles.length - 1)].time,
+            top: hi + span,
+            bottom: Math.max(lo - span, 0),
+            fill: withAlpha(tc === 'red' ? RED : GREEN, 50),
+          });
+        }
+      }
+
+      // Strategy entries — Pine `comment="RSI_BB_L"` / `"RSI_BB_S"`.
+      const markers: IndicatorMarker[] = r.signals.map((sig) => ({
+        time: candles[sig.index].time,
+        position: sig.dir === 1 ? 'belowBar' : 'aboveBar',
+        shape: sig.dir === 1 ? 'arrowUp' : 'arrowDown',
+        color: sig.dir === 1 ? '#2962FF' : RED,
+        text: sig.dir === 1 ? 'RSI_BB_L' : 'RSI_BB_S',
+      }));
+
+      return { series, bands, boxes, markers, barColors };
     },
   },
 ];
