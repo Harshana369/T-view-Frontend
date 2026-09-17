@@ -8,6 +8,7 @@ import { computeLuxTrendlines } from './luxTrendlines';
 import { computeMadLoop, madSignals, type SignalMode } from './madLoop';
 import { computeMacdSma, type ChartArtColor } from './macdSma';
 import { computeMacdSmaTrail, TRAIL_DEFAULTS } from './macdSmaTrail';
+import { computeMoneyManagement, MONEY_DEFAULTS } from './moneyManagement';
 import { computeOrderBlocks, type OrderBlock } from './orderBlocks';
 import { computeSupertrend } from './supertrend';
 import { computeTrama } from './trama';
@@ -2068,6 +2069,12 @@ export const INDICATORS: IndicatorDef[] = [
       { key: 'signalLen', label: 'MACD signal', default: 9, min: 1, max: 200 },
       { key: 'veryslow', label: 'Very slow MA', default: 200, min: 1, max: 1000 },
       { key: 'compare', label: 'Compare exit methods', kind: 'switch', default: 'On' },
+      // ── Money management ──────────────────────────────────────────
+      { key: 'money', label: 'Money Management', kind: 'switch', default: 'On' },
+      { key: 'startEquity', label: 'Start Equity', default: 1000, min: 10, max: 1000000 },
+      { key: 'riskPct', label: 'Risk per trade %', default: 1, min: 0.1, max: 25, step: 0.1 },
+      { key: 'compound', label: 'Compound', kind: 'switch', default: 'On' },
+      { key: 'ddStop', label: 'Stop at drawdown % (0 = off)', default: 0, min: 0, max: 90, step: 5 },
     ],
     compute: (candles, p) => {
       const on = (key: string, fallback = 'On') => str(p, key, fallback) === 'On';
@@ -2182,6 +2189,71 @@ export const INDICATORS: IndicatorDef[] = [
             `TP ${s.byReason.target} / flip ${s.byReason.opposite}`,
         },
       ];
+
+      // ── Money management ────────────────────────────────────────────
+      // ⚠️ MM එකෙන් ඍණ expectancy එකක් ධන කරන්නේ නෑ — ඒක ගණිතයෙන්ම
+      //    බැහැ. ඒ නිසා මුලින්ම "viable ද" කියන එක පෙන්නනවා.
+      if (on('money') && r.trades.length > 0) {
+        const mm = computeMoneyManagement(
+          r.trades.filter((t) => t.reason !== 'open').map((t) => ({ index: t.index, r: t.r })),
+          {
+            ...MONEY_DEFAULTS,
+            startEquity: num(p, 'startEquity', 1000),
+            riskPct: num(p, 'riskPct', 1),
+            compound: on('compound'),
+            maxDrawdownStopPct: num(p, 'ddStop', 0),
+          },
+        );
+        const viable = mm.expectancyR > 0;
+        rows.push({ label: '', value: '' });
+        rows.push({
+          label: 'money management',
+          value: '',
+          labelColor: NEUTRAL,
+        });
+        rows.push({
+          label: '  Viable?',
+          // Expectancy ඍණ නම් sizing එකකින් හරියන්නේ නෑ — ඒක කෙලින්ම කියනවා.
+          value: viable ? 'yes (edge > 0)' : 'NO - edge is negative',
+          valueColor: viable ? up : down,
+        });
+        rows.push({
+          label: '  Equity',
+          value:
+            `${formatPrice(num(p, 'startEquity', 1000))} > ${formatPrice(mm.finalEquity)} ` +
+            `(${mm.returnPct >= 0 ? '+' : ''}${mm.returnPct.toFixed(1)}%)`,
+          valueColor: mm.returnPct > 0 ? up : down,
+        });
+        rows.push({
+          label: '  Max drawdown',
+          value: `${mm.maxDrawdownPct.toFixed(1)}%`,
+          valueColor: TV.orange,
+        });
+        rows.push({
+          label: '  Kelly (optimal risk)',
+          value:
+            mm.kellyPct > 0
+              ? `${mm.kellyPct.toFixed(1)}%  (half ${mm.halfKellyPct.toFixed(1)}%)`
+              : 'negative - do not size up',
+          valueColor: mm.kellyPct > 0 ? up : down,
+        });
+        rows.push({
+          label: '  Risk of ruin',
+          value: `${mm.riskOfRuinPct.toFixed(1)}%  (to -${MONEY_DEFAULTS.ruinLevelPct}%)`,
+          valueColor: mm.riskOfRuinPct > 10 ? down : mm.riskOfRuinPct > 1 ? TV.orange : up,
+        });
+        rows.push({
+          label: '  Losses to ruin',
+          value: `${Number.isFinite(mm.lossesToRuin) ? mm.lossesToRuin : '-'} in a row`,
+        });
+        if (mm.stoppedOut) {
+          rows.push({
+            label: '  Stopped',
+            value: `drawdown limit hit after ${mm.tradesTaken} trades`,
+            valueColor: down,
+          });
+        }
+      }
 
       if (on('compare') && r.comparison.length > 0) {
         rows.push({ label: '', value: '' });
