@@ -1,6 +1,7 @@
 import type { UTCTimestamp } from 'lightweight-charts';
 import type { BandPoint } from './bandFill';
 import { computeBbRsi } from './bbRsi';
+import { computeBbRsiTrail, BB_TRAIL_DEFAULTS } from './bbRsiTrail';
 import { computeBreakoutTargets } from './breakoutTargets';
 import { computeElliottWave } from './elliottWave';
 import { formatPrice } from './format';
@@ -2396,6 +2397,215 @@ export const INDICATORS: IndicatorDef[] = [
       }));
 
       return { series, bands, boxes, markers, barColors };
+    },
+  },
+  {
+    // Bollinger + RSI signals + අදියර දෙකක exit (break-even → trail).
+    // මුල් port එක ('bbrsi') පිරිසිදුව තියෙනවා; මේක ඒකට උඩින්.
+    id: 'bbrsitrail',
+    name: 'Bollinger + RSI - Break-even & Trail Backtest',
+    pane: 'main',
+    params: [
+      {
+        key: 'direction',
+        label: 'Direction',
+        kind: 'select',
+        default: 'both',
+        options: ['both', 'long', 'short'],
+      },
+      { key: 'initialSl', label: 'Initial SL xATR', default: 2, min: 0.2, max: 10, step: 0.1 },
+      // ලාභය මෙච්චර R එකක් වුණාම SL එක entry එකට — ඊට පස්සේ පාඩුවක් නෑ.
+      { key: 'beAt', label: 'Break-even at xR (0 = off)', default: 1, min: 0, max: 5, step: 0.1 },
+      { key: 'beBuffer', label: 'Break-even buffer xR', default: 0.1, min: 0, max: 1, step: 0.05 },
+      { key: 'trailAfter', label: 'Start trailing at xR', default: 1.5, min: 0, max: 10, step: 0.1 },
+      { key: 'trailAtr', label: 'Trail xATR (0 = off)', default: 2, min: 0, max: 15, step: 0.5 },
+      { key: 'takeProfit', label: 'Take Profit xR (0 = off)', default: 0, min: 0, max: 20, step: 0.5 },
+      { key: 'exitOpp', label: 'Exit on opposite signal', kind: 'switch', default: 'On' },
+      { key: 'atrLength', label: 'ATR Length', default: 14, min: 1, max: 200 },
+      { key: 'fee', label: 'Fee % (per side)', default: 0.045, min: 0, max: 0.2, step: 0.001 },
+      { key: 'maxRisk', label: 'Max Risk %', default: 10, min: 0.5, max: 50, step: 0.5 },
+      { key: 'rsiLength', label: 'RSI Period Length', default: 6, min: 1, max: 200 },
+      { key: 'bbLength', label: 'Bollinger Period Length', default: 200, min: 1, max: 1000 },
+      { key: 'bbMult', label: 'Bollinger Std Dev', default: 2, min: 0.1, max: 10, step: 0.1 },
+      { key: 'showBands', label: 'Show Bollinger Bands', kind: 'switch', default: 'On' },
+      { key: 'compare', label: 'Compare exit methods', kind: 'switch', default: 'On' },
+    ],
+    compute: (candles, p) => {
+      const on = (key: string, fallback = 'On') => str(p, key, fallback) === 'On';
+      const signalOpts = {
+        rsiLength: num(p, 'rsiLength', 6),
+        bbLength: num(p, 'bbLength', 200),
+        bbMult: num(p, 'bbMult', 2),
+      };
+      const r = computeBbRsiTrail(candles, {
+        ...BB_TRAIL_DEFAULTS,
+        signal: signalOpts,
+        direction: str(p, 'direction', 'both') as 'both' | 'long' | 'short',
+        atrLength: num(p, 'atrLength', 14),
+        initialSlAtr: num(p, 'initialSl', 2),
+        breakEvenAtR: num(p, 'beAt', 1),
+        breakEvenBufferR: num(p, 'beBuffer', 0.1),
+        trailAfterR: num(p, 'trailAfter', 1.5),
+        trailAtr: num(p, 'trailAtr', 2),
+        takeProfitR: num(p, 'takeProfit', 0),
+        exitOnOpposite: on('exitOpp'),
+        feePct: num(p, 'fee', 0.045),
+        maxRiskPct: num(p, 'maxRisk', 10),
+      });
+
+      const up = '#26a69a';
+      const down = '#ef5350';
+      const at = (index: number) => candles[index].time;
+      const series: IndicatorSeries[] = [];
+      const segments: ChartSegment[] = [];
+
+      if (on('showBands')) {
+        const bb = computeBbRsi(candles, signalOpts);
+        series.push({
+          key: 'upper', label: 'BB Upper', type: 'line', color: withAlpha('#C0C0C0', 55),
+          data: toPoints(candles, bb.upper), lineWidth: 1, lastValueVisible: false,
+        });
+        series.push({
+          key: 'lower', label: 'BB Lower', type: 'line', color: withAlpha('#C0C0C0', 55),
+          data: toPoints(candles, bb.lower), lineWidth: 1, lastValueVisible: false,
+        });
+      }
+
+      // Entry markers — ප්‍රතිඵලය R වලින්, exit වුණේ මොකෙන්ද පාටින්.
+      const markers: IndicatorMarker[] = r.trades.map((t) => ({
+        time: at(t.index),
+        position: t.dir === 1 ? 'belowBar' : 'aboveBar',
+        shape: t.dir === 1 ? 'arrowUp' : 'arrowDown',
+        // breakeven = අළු (පාඩුවක් නෑ), trail/target = කොළ, stop = රතු
+        color:
+          t.reason === 'open' ? NEUTRAL
+          : t.reason === 'breakeven' ? TV.orange
+          : t.r > 0 ? up : down,
+        text: `${t.dir === 1 ? 'L' : 'S'} ${t.r >= 0 ? '+' : ''}${t.r.toFixed(2)}R`,
+      }));
+
+      // අන්තිම trade එකේ SL එකේ **පඩිපෙළ** — මුල් SL → break-even → trail.
+      const lastTrade = r.trades[r.trades.length - 1];
+      if (lastTrade) {
+        const pts: LinePoint[] = [];
+        let k = 0;
+        for (let i = lastTrade.index; i <= lastTrade.exitIndex; i++) {
+          while (k + 1 < lastTrade.stopPath.length && lastTrade.stopPath[k + 1].index <= i) k++;
+          pts.push({ time: at(i), value: lastTrade.stopPath[k].price });
+        }
+        series.push({
+          key: 'stopPath', label: 'Stop (BE then trail)', type: 'line',
+          color: down, data: pts, lineWidth: 2,
+        });
+        segments.push({
+          time1: at(lastTrade.index),
+          time2: at(lastTrade.exitIndex),
+          price: lastTrade.entry,
+          color: lastTrade.dir === 1 ? up : down,
+          width: 2,
+          label: {
+            text: `Entry > ${formatPrice(lastTrade.entry)}`,
+            background: lastTrade.dir === 1 ? up : down,
+            color: '#fff',
+          },
+        });
+      }
+
+      const s = r.stats;
+      const profitable = s.expectancy > 0;
+      const rows: IndicatorPanelRow[] = [
+        { label: 'Trades', value: String(s.trades) },
+        {
+          label: 'Result',
+          value: s.trades === 0 ? '-' : profitable ? 'PROFIT' : 'LOSS',
+          valueColor: profitable ? up : down,
+        },
+        {
+          label: 'Expectancy',
+          value: s.trades ? `${s.expectancy >= 0 ? '+' : ''}${s.expectancy.toFixed(3)}R` : '-',
+          valueColor: profitable ? up : down,
+        },
+        {
+          label: 'Total',
+          value: s.trades ? `${s.totalR >= 0 ? '+' : ''}${s.totalR.toFixed(1)}R` : '-',
+          valueColor: s.totalR > 0 ? up : down,
+        },
+        { label: 'Win rate', value: s.trades ? `${s.winRate.toFixed(1)}%` : '-' },
+        {
+          label: 'Profit factor',
+          value: s.trades ? (Number.isFinite(s.profitFactor) ? s.profitFactor.toFixed(2) : 'inf') : '-',
+          valueColor: s.profitFactor >= 1 ? up : down,
+        },
+        { label: 'Max drawdown', value: s.trades ? `${s.maxDrawdownR.toFixed(1)}R` : '-', valueColor: TV.orange },
+        { label: '', value: '' },
+        // ඔබ ඉල්ලපු දේ — SL එක කොහෙදි වැදුනාද කියන බෙදීම.
+        {
+          label: 'exit breakdown',
+          value: 'count',
+          labelColor: NEUTRAL,
+          valueColor: NEUTRAL,
+        },
+        {
+          label: '  Stop (loss)',
+          value: String(s.byReason.stop),
+          valueColor: down,
+        },
+        {
+          label: '  Break-even (no loss)',
+          value: String(s.byReason.breakeven),
+          valueColor: TV.orange,
+        },
+        {
+          label: '  Trail (locked profit)',
+          value: String(s.byReason.trail),
+          valueColor: up,
+        },
+        { label: '  Target / flip', value: `${s.byReason.target} / ${s.byReason.opposite}` },
+        {
+          label: '  Trail capture',
+          value: s.trades ? `${(s.captureRatio * 100).toFixed(0)}% of best move` : '-',
+        },
+      ];
+
+      if (r.longStats.trades > 0 || r.shortStats.trades > 0) {
+        rows.push({ label: '', value: '' });
+        rows.push({ label: 'side', value: 'PF / expectancy / trades', labelColor: NEUTRAL, valueColor: NEUTRAL });
+        const side = (name: string, st: typeof s) => {
+          if (st.trades === 0) return;
+          rows.push({
+            label: `  ${name}`,
+            value:
+              `${Number.isFinite(st.profitFactor) ? st.profitFactor.toFixed(2) : 'inf'} / ` +
+              `${st.expectancy >= 0 ? '+' : ''}${st.expectancy.toFixed(3)}R / ${st.trades}`,
+            valueColor: st.expectancy > 0 ? up : down,
+          });
+        };
+        side('Long', r.longStats);
+        side('Short', r.shortStats);
+      }
+
+      if (on('compare') && r.comparison.length > 0) {
+        rows.push({ label: '', value: '' });
+        rows.push({
+          label: 'exit method',
+          value: 'PF / expectancy / trades',
+          labelColor: NEUTRAL,
+          valueColor: NEUTRAL,
+        });
+        for (const v of r.comparison) {
+          rows.push({
+            label: `  ${v.name}`,
+            value:
+              v.stats.trades === 0
+                ? '-'
+                : `${Number.isFinite(v.stats.profitFactor) ? v.stats.profitFactor.toFixed(2) : 'inf'} / ` +
+                  `${v.stats.expectancy >= 0 ? '+' : ''}${v.stats.expectancy.toFixed(3)}R / ${v.stats.trades}`,
+            valueColor: v.stats.expectancy > 0 ? up : down,
+          });
+        }
+      }
+
+      return { series, segments, markers, panel: { position: 'Top Right', rows } };
     },
   },
 ];
