@@ -2415,14 +2415,26 @@ export const INDICATORS: IndicatorDef[] = [
       },
       { key: 'initialSl', label: 'Initial SL xATR', default: 2, min: 0.2, max: 10, step: 0.1 },
       // ලාභය මෙච්චර R එකක් වුණාම SL එක entry එකට — ඊට පස්සේ පාඩුවක් නෑ.
-      { key: 'beAt', label: 'Break-even at xR (0 = off)', default: 1, min: 0, max: 5, step: 0.1 },
+      // Ratio mode එකේදී මේක ඕන නෑ (BE එක ඉබේම එනවා) — 0 තියෙන්නේ ඒකයි.
+      { key: 'beAt', label: 'Break-even at xR (0 = off)', default: 0, min: 0, max: 5, step: 0.1 },
       { key: 'beBuffer', label: 'Break-even buffer xR', default: 0.1, min: 0, max: 1, step: 0.05 },
-      { key: 'trailAfter', label: 'Start trailing at xR', default: 1.5, min: 0, max: 10, step: 0.1 },
-      { key: 'trailAtr', label: 'Trail xATR (0 = off)', default: 2, min: 0, max: 15, step: 0.5 },
+      { key: 'trailAfter', label: 'Start trailing at xR', default: 0, min: 0, max: 10, step: 0.1 },
+      {
+        key: 'trailMode',
+        label: 'Trail method',
+        kind: 'select',
+        default: 'ratio',
+        options: ['ratio', 'atr'],
+      },
+      // 0.5 = 1:2 — ලාභය +2R වුණාම SL එක +1R ට. Break-even එකත් ඉබේම.
+      { key: 'trailRatio', label: 'Lock ratio (0.5 = 1:2)', default: 0.5, min: 0, max: 0.95, step: 0.05 },
+      { key: 'trailAtr', label: 'Trail xATR (atr mode)', default: 2, min: 0, max: 15, step: 0.5 },
       { key: 'takeProfit', label: 'Take Profit xR (0 = off)', default: 0, min: 0, max: 20, step: 0.5 },
       { key: 'exitOpp', label: 'Exit on opposite signal', kind: 'switch', default: 'On' },
       { key: 'atrLength', label: 'ATR Length', default: 14, min: 1, max: 200 },
       { key: 'fee', label: 'Fee % (per side)', default: 0.045, min: 0, max: 0.2, step: 0.001 },
+      // Trail එක තද වෙන තරමට මේක තීරණාත්මක — විස්තර bbRsiTrail.ts එකේ.
+      { key: 'slip', label: 'Slippage % (per side)', default: 0.02, min: 0, max: 0.5, step: 0.005 },
       { key: 'maxRisk', label: 'Max Risk %', default: 10, min: 0.5, max: 50, step: 0.5 },
       { key: 'rsiLength', label: 'RSI Period Length', default: 6, min: 1, max: 200 },
       { key: 'bbLength', label: 'Bollinger Period Length', default: 200, min: 1, max: 1000 },
@@ -2443,13 +2455,16 @@ export const INDICATORS: IndicatorDef[] = [
         direction: str(p, 'direction', 'both') as 'both' | 'long' | 'short',
         atrLength: num(p, 'atrLength', 14),
         initialSlAtr: num(p, 'initialSl', 2),
-        breakEvenAtR: num(p, 'beAt', 1),
+        breakEvenAtR: num(p, 'beAt', 0),
         breakEvenBufferR: num(p, 'beBuffer', 0.1),
-        trailAfterR: num(p, 'trailAfter', 1.5),
+        trailAfterR: num(p, 'trailAfter', 0),
+        trailMode: str(p, 'trailMode', 'ratio') as 'ratio' | 'atr',
+        trailRatio: num(p, 'trailRatio', 0.5),
         trailAtr: num(p, 'trailAtr', 2),
         takeProfitR: num(p, 'takeProfit', 0),
         exitOnOpposite: on('exitOpp'),
         feePct: num(p, 'fee', 0.045),
+        slippagePct: num(p, 'slip', 0.02),
         maxRiskPct: num(p, 'maxRisk', 10),
       });
 
@@ -2659,6 +2674,11 @@ export const INDICATORS: IndicatorDef[] = [
           valueColor: s.profitFactor >= 1 ? up : down,
         },
         { label: 'Max drawdown', value: s.trades ? `${s.maxDrawdownR.toFixed(1)}R` : '-', valueColor: TV.orange },
+        {
+          label: 'Cost / trade',
+          value: `fee ${num(p, 'fee', 0.045)}% + slip ${num(p, 'slip', 0.02)}%`,
+          valueColor: TV.orange,
+        },
         { label: '', value: '' },
         // ඔබ ඉල්ලපු දේ — SL එක කොහෙදි වැදුනාද කියන බෙදීම.
         {

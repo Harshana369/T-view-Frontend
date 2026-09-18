@@ -41,12 +41,34 @@ export interface BbRsiTrailOptions {
   breakEvenBufferR: number;
   /** ලාභය මෙච්චර R එකක් වුණාම trail පටන් ගන්නවා. */
   trailAfterR: number;
-  /** Trail දුර (×ATR). 0 = trail නෑ, BE එකේ නවතිනවා. */
+  /**
+   * Trail කරන ක්‍රමය.
+   *
+   *   `ratio` — ලාභයෙන් ස්ථිර කොටසක් අගුළු දානවා. 1:2 කියන්නේ
+   *             `trailRatio = 0.5`: price එක +2R ට ගියොත් SL එක +1R ට,
+   *             +4R ට ගියොත් +2R ට. Break-even එකත් ඉබේම ඇතුළත් —
+   *             ලාභය 0ට වඩා වැඩි වුණු ගමන් SL එක entry එකට එහා යනවා.
+   *   `atr`   — හොඳම මිලෙන් `trailAtr × ATR` ක් පිටිපස්සෙන්.
+   */
+  trailMode: 'ratio' | 'atr';
+  /** `ratio` mode එකට — අගුළු දාන කොටස. 0.5 = 1:2 අනුපාතය. */
+  trailRatio: number;
+  /** `atr` mode එකට — trail දුර (×ATR). 0 = trail නෑ. */
   trailAtr: number;
   /** ස්ථිර take profit (R). 0 = නෑ. */
   takeProfitR: number;
   exitOnOpposite: boolean;
   feePct: number;
+  /**
+   * පැත්තකට slippage (%) — order එක හිතපු මිලට නොවැදී ඊට නරක මිලකට
+   * වැදෙන එක.
+   *
+   * ⚠️ Trail එක තද වෙන තරමට මේක තීරණාත්මකයි. Ratio trail එකේ සාමාන්‍ය
+   *    දිනුම price එකෙන් 0.23% ක් විතරයි — slippage 0.10% ක් වුණොත්
+   *    edge එක බිංදුවට යනවා. Stop orders වලට alt perps වල 0.02–0.05%
+   *    සාමාන්‍යයි, volatile වෙලාවට ඊට වඩා නරකයි.
+   */
+  slippagePct: number;
   maxRiskPct: number;
 }
 
@@ -54,13 +76,18 @@ export const BB_TRAIL_DEFAULTS: Omit<BbRsiTrailOptions, 'signal'> = {
   direction: 'both',
   atrLength: 14,
   initialSlAtr: 2,
-  breakEvenAtR: 1,
+  // Ratio trail එකේදී break-even එක ඉබේම එනවා (ලාභය 0ට වඩා වැඩි
+  // වුණාම SL එක entry එකට එහා), ඒ නිසා වෙනම BE පියවරක් ඕන නෑ.
+  breakEvenAtR: 0,
   breakEvenBufferR: 0.1,
-  trailAfterR: 1.5,
+  trailAfterR: 0,
+  trailMode: 'ratio',
+  trailRatio: 0.5,
   trailAtr: 2,
   takeProfitR: 0,
   exitOnOpposite: true,
   feePct: 0.045,
+  slippagePct: 0.02,
   maxRiskPct: 10,
 };
 
@@ -180,7 +207,8 @@ function runTrade(
 
   const initialSl = entry - dir * risk;
   const target = o.takeProfitR > 0 ? entry + dir * risk * o.takeProfitR : NaN;
-  const feeR = ((o.feePct * 2) / 100) * (entry / risk);
+  // Fees + slippage — දෙකම පැත්ත දෙකට, R වලින්.
+  const costR = (((o.feePct + o.slippagePct) * 2) / 100) * (entry / risk);
 
   let stop = initialSl;
   let best = 0;
@@ -193,7 +221,7 @@ function runTrade(
   const finish = (j: number, price: number, reason: BbExitReason): BbTrade => ({
     index: i, dir, entry, initialSl, finalSl: stop,
     exitIndex: j, exitPrice: price, reason,
-    r: ((price - entry) * dir) / risk - feeR,
+    r: ((price - entry) * dir) / risk - costR,
     maxFavorableR: best,
     reachedBreakEven, breakEvenIndex, startedTrailing, trailStartIndex, stopPath,
   });
@@ -237,9 +265,18 @@ function runTrade(
     }
 
     // 4. Trail — ලාභය දිහාවට විතරයි, ආපහු නෑ.
-    if (o.trailAtr > 0 && best >= o.trailAfterR) {
-      const at = atr[j] > 0 ? atr[j] : a;
-      const candidate = dir === 1 ? b.high - at * o.trailAtr : b.low + at * o.trailAtr;
+    const trailOn = o.trailMode === 'ratio' ? o.trailRatio > 0 : o.trailAtr > 0;
+    if (trailOn && best >= o.trailAfterR) {
+      // `ratio`: හොඳම ලාභයෙන් `trailRatio` ක් අගුළු දානවා.
+      //          (1:2 → best +2R වුණාම SL එක +1R ට.)
+      // `atr`  : හොඳම **මිලෙන්** ATR කිහිපයක් පිටිපස්සෙන්.
+      const candidate =
+        o.trailMode === 'ratio'
+          ? entry + dir * risk * (best * o.trailRatio)
+          : (() => {
+              const at = atr[j] > 0 ? atr[j] : a;
+              return dir === 1 ? b.high - at * o.trailAtr : b.low + at * o.trailAtr;
+            })();
       if (dir === 1 ? candidate > stop : candidate < stop) {
         stop = candidate;
         if (!startedTrailing) trailStartIndex = j;
@@ -295,10 +332,12 @@ export function computeBbRsiTrail(candles: Candle[], o: BbRsiTrailOptions): BbTr
 
   // Break-even එකෙන් ඇත්තටම වෙනසක් වෙනවද — ඒක මනින්න.
   const variants: { name: string; opts: Partial<BbRsiTrailOptions> }[] = [
-    { name: 'BE + trail (current)', opts: {} },
-    { name: 'BE only, no trail', opts: { trailAtr: 0 } },
-    { name: 'Trail only, no BE', opts: { breakEvenAtR: 0 } },
-    { name: 'Plain stop (no BE/trail)', opts: { breakEvenAtR: 0, trailAtr: 0 } },
+    { name: 'Current settings', opts: {} },
+    { name: 'Ratio 1:2 (lock half)', opts: { trailMode: 'ratio', trailRatio: 0.5, breakEvenAtR: 0, trailAfterR: 0 } },
+    { name: 'Ratio 1:3 (lock third)', opts: { trailMode: 'ratio', trailRatio: 1 / 3, breakEvenAtR: 0, trailAfterR: 0 } },
+    { name: 'Ratio 2:3 (lock two thirds)', opts: { trailMode: 'ratio', trailRatio: 2 / 3, breakEvenAtR: 0, trailAfterR: 0 } },
+    { name: 'ATR trail 2x + BE', opts: { trailMode: 'atr', trailAtr: 2, breakEvenAtR: 1, trailAfterR: 1.5 } },
+    { name: 'Plain stop (no trail)', opts: { trailMode: 'atr', trailAtr: 0, breakEvenAtR: 0 } },
   ];
   const comparison = variants.map((v) => ({
     name: v.name,
