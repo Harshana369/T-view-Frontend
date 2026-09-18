@@ -2,6 +2,7 @@ import type { UTCTimestamp } from 'lightweight-charts';
 import type { BandPoint } from './bandFill';
 import { computeBbRsi } from './bbRsi';
 import { computeBbRsiTrail, BB_TRAIL_DEFAULTS } from './bbRsiTrail';
+import { positionView, POSITION_DEFAULTS, formatSize, formatUsd } from './position';
 import { computeBreakoutTargets } from './breakoutTargets';
 import { computeElliottWave } from './elliottWave';
 import { formatPrice } from './format';
@@ -2070,7 +2071,9 @@ export const INDICATORS: IndicatorDef[] = [
       { key: 'slow', label: 'MACD slow', default: 26, min: 1, max: 400 },
       { key: 'signalLen', label: 'MACD signal', default: 9, min: 1, max: 200 },
       { key: 'veryslow', label: 'Very slow MA', default: 200, min: 1, max: 1000 },
-      { key: 'compare', label: 'Compare exit methods', kind: 'switch', default: 'On' },
+      // Default එකට off — මේක පේළි 7ක් ගන්නවා, සහ ඒක දිගටම බලාගෙන
+      // ඉන්න දෙයක් නෙවෙයි (exit ක්‍රමයක් තෝරගන්නකම් විතරයි).
+      { key: 'compare', label: 'Compare exit methods', kind: 'switch', default: 'Off' },
       // ── Money management ──────────────────────────────────────────
       { key: 'money', label: 'Money Management', kind: 'switch', default: 'On' },
       { key: 'startEquity', label: 'Start Equity', default: 1000, min: 10, max: 1000000 },
@@ -2257,7 +2260,7 @@ export const INDICATORS: IndicatorDef[] = [
         }
       }
 
-      if (on('compare') && r.comparison.length > 0) {
+      if (on('compare', 'Off') && r.comparison.length > 0) {
         rows.push({ label: '', value: '' });
         rows.push({
           label: 'exit method',
@@ -2440,7 +2443,13 @@ export const INDICATORS: IndicatorDef[] = [
       { key: 'bbLength', label: 'Bollinger Period Length', default: 200, min: 1, max: 1000 },
       { key: 'bbMult', label: 'Bollinger Std Dev', default: 2, min: 0.1, max: 10, step: 0.1 },
       { key: 'showBands', label: 'Show Bollinger Bands', kind: 'switch', default: 'On' },
-      { key: 'compare', label: 'Compare exit methods', kind: 'switch', default: 'On' },
+      // Default එකට off — මේක පේළි 7ක් ගන්නවා, සහ ඒක දිගටම බලාගෙන
+      // ඉන්න දෙයක් නෙවෙයි (exit ක්‍රමයක් තෝරගන්නකම් විතරයි).
+      { key: 'compare', label: 'Compare exit methods', kind: 'switch', default: 'Off' },
+      // ── Binance-style position panel ──────────────────────────────
+      { key: 'position', label: 'Position Panel', kind: 'switch', default: 'On' },
+      { key: 'riskUsd', label: 'Risk per trade ($)', default: 6, min: 1, max: 100000 },
+      { key: 'leverage', label: 'Leverage (x)', default: 10, min: 1, max: 125 },
     ],
     compute: (candles, p) => {
       const on = (key: string, fallback = 'On') => str(p, key, fallback) === 'On';
@@ -2606,9 +2615,10 @@ export const INDICATORS: IndicatorDef[] = [
       const profitable = s.expectancy > 0;
       const rows: IndicatorPanelRow[] = [];
 
-      // ── දැන් දුවන trade එක ──────────────────────────────────────────
-      // Replay එකේදී මේක bar එකෙන් bar එකට වෙනස් වෙනවා — trade එක
-      // කොහොමද දුවන්නේ කියලා ඇහැටම බලාගන්න පුළුවන්.
+      // ── දැන් දුවන position එක ────────────────────────────────────
+      // Binance Futures එකේ position row එක වගේ, ඒත් R තොරතුරුත් එකට.
+      // (කලින් මේක "LIVE TRADE" සහ "POSITION" කියලා දෙකක් තිබුණා —
+      //  Entry එකයි stop එකයි දෙකේම තිබුණු නිසා පේළි 5ක් නිකරුණේ ගියා.)
       if (lastTrade) {
         const t = lastTrade;
         const riskNow = Math.abs(t.entry - t.initialSl);
@@ -2617,32 +2627,73 @@ export const INDICATORS: IndicatorDef[] = [
         const lockedR = ((t.finalSl - t.entry) * t.dir) / riskNow;
         const live = t.reason === 'open';
         const stageText = t.startedTrailing
-          ? 'trailing (profit locked)'
+          ? 'trailing (locked)'
           : t.reachedBreakEven
             ? 'break-even (no loss)'
             : 'initial stop (at risk)';
         const stageColour = t.startedTrailing ? up : t.reachedBreakEven ? TV.orange : down;
+        const riskUsd = num(p, 'riskUsd', 6);
+        const leverage = num(p, 'leverage', 10);
+        const pv = on('position')
+          ? positionView(t.dir, t.entry, t.initialSl, t.finalSl, lastClose, {
+              ...POSITION_DEFAULTS,
+              riskUsd,
+              leverage,
+            })
+          : null;
 
         rows.push({
-          label: live ? 'LIVE TRADE' : 'last trade',
-          value: t.dir === 1 ? 'LONG' : 'SHORT',
+          label: live ? 'POSITION' : 'LAST TRADE',
+          value: `${t.dir === 1 ? 'LONG' : 'SHORT'}${pv ? ` ${leverage}x` : ''}`,
           labelColor: live ? up : NEUTRAL,
           valueColor: t.dir === 1 ? up : down,
         });
-        rows.push({ label: '  Entry', value: formatPrice(t.entry) });
         rows.push({ label: '  Stage', value: stageText, valueColor: stageColour });
+        if (pv) {
+          rows.push({
+            label: '  Size',
+            value: `${formatSize(pv.size)}  ($${pv.notionalUsd.toFixed(2)})`,
+          });
+        }
+        // Entry සහ mark එකම පේළියේ — දෙකම එකට බලන එකයි වැදගත්.
+        rows.push({
+          label: '  Entry / Mark',
+          value: `${formatPrice(t.entry)} / ${formatPrice(lastClose)}`,
+        });
         rows.push({
           label: '  Stop now',
           value: `${formatPrice(t.finalSl)}  (${lockedR >= 0 ? '+' : ''}${lockedR.toFixed(2)}R)`,
           valueColor: stageColour,
         });
+        if (pv) {
+          rows.push({
+            label: '  Liq. Price',
+            value:
+              `${formatPrice(pv.liquidationPrice)}  ` +
+              `(${pv.liquidationDistancePct.toFixed(1)}% away)`,
+            valueColor: pv.liquidationDistancePct < 10 ? down : NEUTRAL,
+          });
+          rows.push({ label: '  Margin', value: `$${pv.marginUsd.toFixed(2)}` });
+        }
+        // ඩොලර්, ROE, R — තුනම එක පේළියක.
+        const pnlUsd = live ? (pv ? pv.unrealizedUsd : liveR * riskUsd) : t.r * riskUsd;
         rows.push({
-          label: live ? '  Open P/L' : '  Result',
-          value: live
-            ? `${liveR >= 0 ? '+' : ''}${liveR.toFixed(2)}R`
-            : `${t.r >= 0 ? '+' : ''}${t.r.toFixed(2)}R (${t.reason})`,
+          label: live ? '  PNL' : '  Result',
+          value:
+            `${formatUsd(pnlUsd)}` +
+            (pv ? `  (${pv.roePct >= 0 ? '+' : ''}${pv.roePct.toFixed(1)}%)` : '') +
+            `  ${(live ? liveR : t.r) >= 0 ? '+' : ''}${(live ? liveR : t.r).toFixed(2)}R` +
+            (live ? '' : ` ${t.reason}`),
           valueColor: (live ? liveR : t.r) >= 0 ? up : down,
         });
+        if (pv) {
+          // SL එක entry එක පනිනකොට මේක ඍණ සිට ධන වෙනවා.
+          rows.push({
+            label: '  If stop hits',
+            value: formatUsd(pv.stopUsd),
+            valueColor: pv.stopUsd >= 0 ? up : down,
+          });
+        }
         rows.push({
           label: '  Best so far',
           value: `${t.maxFavorableR >= 0 ? '+' : ''}${t.maxFavorableR.toFixed(2)}R`,
@@ -2665,6 +2716,12 @@ export const INDICATORS: IndicatorDef[] = [
         {
           label: 'Total',
           value: s.trades ? `${s.totalR >= 0 ? '+' : ''}${s.totalR.toFixed(1)}R` : '-',
+          valueColor: s.totalR > 0 ? up : down,
+        },
+        // Book කරලා තියෙන ලාභය — වැහුණු trades විතරයි.
+        {
+          label: 'Booked PNL',
+          value: s.trades ? formatUsd(s.totalR * num(p, 'riskUsd', 6)) : '-',
           valueColor: s.totalR > 0 ? up : down,
         },
         { label: 'Win rate', value: s.trades ? `${s.winRate.toFixed(1)}%` : '-' },
@@ -2726,7 +2783,7 @@ export const INDICATORS: IndicatorDef[] = [
         side('Short', r.shortStats);
       }
 
-      if (on('compare') && r.comparison.length > 0) {
+      if (on('compare', 'Off') && r.comparison.length > 0) {
         rows.push({ label: '', value: '' });
         rows.push({
           label: 'exit method',

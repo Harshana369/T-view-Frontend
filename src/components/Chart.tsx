@@ -91,6 +91,8 @@ export function Chart({ symbol, interval, onPrice, onLoading, onError }: ChartPr
   // (BTC 2ක්, 1000SATS 8ක්) මේක ස්ථිර නෑ — ඒ නිසා chart එකෙන්ම මනිනවා,
   // නැත්නම් panel එක price අංක වලට උඩින් යනවා.
   const [priceScaleWidth, setPriceScaleWidth] = useState(0);
+  /** හකුළුවපු panels — index එකෙන්. දිග panel එකක් chart එක වහනවා. */
+  const [collapsed, setCollapsed] = useState<Record<number, boolean>>({});
 
   const indicators = useStore((s) => s.indicators);
 
@@ -850,16 +852,41 @@ export function Chart({ symbol, interval, onPrice, onLoading, onError }: ChartPr
               : {}),
           }}
         >
-          {panel.rows.map((row) => (
-            <div className="chart-panel-row" key={row.label}>
-              <span style={{ color: row.labelColor, background: row.labelBackground }}>
-                {row.label}
-              </span>
-              <span style={{ color: row.valueColor, background: row.valueBackground }}>
-                {row.value}
-              </span>
-            </div>
-          ))}
+          <button
+            type="button"
+            className="chart-panel-toggle"
+            title={collapsed[i] ? 'පෙන්නන්න' : 'හකුළන්න'}
+            onClick={() => setCollapsed((c) => ({ ...c, [i]: !c[i] }))}
+          >
+            {collapsed[i] ? '▸' : '▾'}
+          </button>
+          {(collapsed[i] ? panel.rows.slice(0, 1) : panel.rows).map((row, r) => {
+            // හිස් පේළියක් = කොටස් අතර වෙන් කිරීමක්. හිස් row එකක්
+            // විදිහට අඳිනවා වෙනුවට තුනී ඉරක් — panel එක කොටුයි,
+            // කොටස් වෙන්වෙලාත් පේනවා.
+            if (row.label === '' && row.value === '') {
+              return <div className="chart-panel-sep" key={`sep-${r}`} />;
+            }
+            // `  ` දෙකකින් පටන් ගන්න label එකක් = උප-පේළියක්.
+            const sub = row.label.startsWith('  ');
+            // Value එකක් නැති පේළියක් = කොටසක මාතෘකාව.
+            const heading = row.value === '' && !sub;
+            return (
+              <div
+                className={
+                  'chart-panel-row' + (sub ? ' sub' : '') + (heading ? ' heading' : '')
+                }
+                key={`${row.label}-${r}`}
+              >
+                <span style={{ color: row.labelColor, background: row.labelBackground }}>
+                  {row.label.trimStart()}
+                </span>
+                <span style={{ color: row.valueColor, background: row.valueBackground }}>
+                  {row.value}
+                </span>
+              </div>
+            );
+          })}
         </div>
       ))}
     </div>

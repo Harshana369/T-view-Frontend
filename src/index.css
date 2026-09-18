@@ -522,9 +522,36 @@ body {
   border: 1px solid rgba(120, 123, 134, 0.4);
   border-radius: 4px;
   font-size: 11px;
-  pointer-events: none;
+  /* Panel එක chart එකෙන් පිටට යන්නේ නෑ. ගැලරිය දිග වුණොත් ඇතුළෙන්
+     scroll වෙනවා — ඒත් scrollbar එක පාහේ නොපෙනෙන විදිහට (පහළ බලන්න). */
+  max-height: calc(100% - 52px);
+  overflow-y: auto;
+  /* Scroll කරන්නත් හකුළන්නත් pointer events ඕන. Panel එක chart එකේ
+     කොනක තියෙන්නේ, සහ ▾ එකෙන් හකුළන්න පුළුවන් — ඒ නිසා chart එකේ ඒ
+     ප්‍රදේශය ඕන වුණාම ආපහු ගන්න පුළුවන්. */
+  pointer-events: auto;
+  /* ▾ බොත්තමට. */
+  padding-right: 14px;
   position: absolute;
   z-index: 5;
+}
+
+/* හකුළන/දිග හරින බොත්තම — දකුණු උඩ කොනේ. */
+.chart-panel-toggle {
+  background: none;
+  border: 0;
+  color: #6b6f7a;
+  cursor: pointer;
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 3px;
+  position: absolute;
+  right: 2px;
+  top: 2px;
+}
+
+.chart-panel-toggle:hover {
+  color: #d1d4dc;
 }
 
 .chart-panel.pos-top-right {
@@ -561,11 +588,11 @@ body {
 
 .chart-panel-row {
   display: grid;
-  grid-template-columns: auto minmax(96px, auto);
+  grid-template-columns: auto minmax(88px, auto);
 }
 
 .chart-panel-row span {
-  padding: 2px 8px;
+  padding: 1px 8px;
   white-space: nowrap;
 }
 
@@ -575,6 +602,28 @@ body {
 
 .chart-panel-row span:last-child {
   text-align: right;
+}
+
+/* උප-පේළි — ටිකක් ඇතුළට, මදක් අඩු පැහැදිලි බවක්. */
+.chart-panel-row.sub span:first-child {
+  color: #8b8f9a;
+  font-weight: 400;
+  padding-left: 16px;
+}
+
+/* කොටසක මාතෘකාව. */
+.chart-panel-row.heading span:first-child {
+  color: #6b6f7a;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  padding-top: 3px;
+  text-transform: uppercase;
+}
+
+/* කොටස් අතර ඉර — හිස් පේළියකට වඩා අඩු ඉඩක් ගන්නවා. */
+.chart-panel-sep {
+  border-top: 1px solid rgba(120, 123, 134, 0.22);
+  margin: 3px 8px;
 }
 
 /* -------------------------------------------------------------- watchlist */
@@ -999,4 +1048,37 @@ body {
   cursor: pointer;
   font-size: 11px;
   padding: 5px 10px;
+}
+
+/* ---------------------------------------------------------- scrollbars */
+/* Windows එකේ default scrollbar එක තරමක් තදයි — chart එකේ අඳුරු
+   පසුබිමට ඒක ඇස ගැටෙනවා. මේවා තුනී, පාහේ නොපෙනෙන, hover කළාම විතරක්
+   පැහැදිලි වෙන ඒවා. (Firefox එකට `scrollbar-width`, අනිත් ඒවාට
+   `::-webkit-scrollbar`.) */
+* {
+  scrollbar-color: rgba(120, 123, 134, 0.28) transparent;
+  scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+  height: 6px;
+  width: 6px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: rgba(120, 123, 134, 0.28);
+  border-radius: 3px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(120, 123, 134, 0.55);
+}
+
+/* කොන දෙක හමුවෙන තැන — default එකේ පාට කොටුවක් පේනවා. */
+*::-webkit-scrollbar-corner {
+  background: transparent;
 }
