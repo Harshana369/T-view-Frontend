@@ -24,6 +24,9 @@ interface Row {
  * Coins groups වලට බෙදන්න පුළුවන් (Favorites, Majors, Memes...) — ඒ එක්කම
  * Binance එකේ තියෙන *සියලුම* perps පෙන්නන "All coins" group එකකුත් තියෙනවා.
  */
+/** Win-rate scan එකෙන් හදන group එකේ නම. */
+const WIN_GROUP_NAME = 'Win rate 75%+';
+
 export function Watchlist() {
   const watchGroups = useStore((s) => s.watchGroups);
   const activeGroupId = useStore((s) => s.activeGroupId);
@@ -31,6 +34,9 @@ export function Watchlist() {
   const setSymbol = useStore((s) => s.setSymbol);
   const setActiveGroup = useStore((s) => s.setActiveGroup);
   const addGroup = useStore((s) => s.addGroup);
+  const setGroupSymbols = useStore((s) => s.setGroupSymbols);
+  // Scan එක දුවන්නේ chart එකේ දැන් තියෙන timeframe එකට.
+  const interval = useStore((s) => s.interval);
   const renameGroup = useStore((s) => s.renameGroup);
   const removeGroup = useStore((s) => s.removeGroup);
   const addToWatchlist = useStore((s) => s.addToWatchlist);
@@ -44,6 +50,60 @@ export function Watchlist() {
 
   const [adding, setAdding] = useState(false);
   const [managing, setManaging] = useState(false);
+  /** Win-rate scan එකේ තත්ත්වය — null = දුවන්නේ නෑ. */
+  const [scanState, setScanState] = useState<string | null>(null);
+
+  /**
+   * Coins ඔක්කොම Bollinger + RSI backtest එකෙන් server එකේ දුවවලා,
+   * win rate එක 75% පනින ඒවා වෙනම group එකකට දානවා.
+   *
+   * ⚠️ Win rate එක **exit රීති වලින්** තීරණය වෙනවා. දැන් තියෙන ratio
+   *    trail එකේ SL එක ඉක්මනට break-even එකට යන නිසා win rate එක ලොකුයි,
+   *    ඒත් දිනුම් පොඩියි. ඒ නිසා group එකේ නමට win rate එක දාලා තිබුණත්,
+   *    ඒක විතරක් බලලා trade කරන්න එපා — profit factor එකයි expectancy
+   *    එකයි console එකේ පේනවා.
+   */
+  const scanWinners = async () => {
+    setScanState('scanning 528 coins...');
+    try {
+      const res = await fetch(`/api/scan/winrate?interval=${interval}&minWinRate=75&minTrades=10`);
+      if (!res.ok) throw new Error(`scan failed: ${res.status}`);
+      const data = (await res.json()) as {
+        hits: { symbol: string; winRate: number; trades: number; profitFactor: number; expectancy: number }[];
+        scanned: number;
+        tookMs: number;
+      };
+
+      // දැනටමත් තියෙන group එකක් නම් ඒකම නැවත පුරවනවා, නැත්නම් අලුතෙන්.
+      const existing = watchGroups.find((g) => g.name === WIN_GROUP_NAME);
+      const id = existing ? existing.id : addGroup(WIN_GROUP_NAME);
+      setGroupSymbols(id, data.hits.map((h) => h.symbol));
+      setActiveGroup(id);
+
+      // Win rate එක විතරක් මදි — අනිත් අගයනුත් බලාගන්න පුළුවන් වෙන්න.
+      // eslint-disable-next-line no-console
+      console.table(
+        data.hits.slice(0, 50).map((h) => ({
+          symbol: h.symbol,
+          win: `${h.winRate.toFixed(1)}%`,
+          trades: h.trades,
+          PF: h.profitFactor.toFixed(2),
+          expectancy: `${h.expectancy >= 0 ? '+' : ''}${h.expectancy.toFixed(3)}R`,
+        })),
+      );
+      setScanState(
+        `${data.hits.length} coins (${data.scanned}න්), ${(data.tookMs / 1000).toFixed(1)}s`,
+      );
+    } catch (err) {
+      setScanState(
+        err instanceof TypeError
+          ? 'backend එක දුවනවද බලන්න (apps2/server → npm start)'
+          : err instanceof Error
+            ? err.message
+            : 'scan failed',
+      );
+    }
+  };
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState('');
 
@@ -202,7 +262,22 @@ export function Watchlist() {
             ⋯
           </button>
         )}
+        <button
+          type="button"
+          className="wl-add"
+          title={`Bollinger + RSI backtest එකෙන් win rate 75%+ coins "${WIN_GROUP_NAME}" group එකට`}
+          disabled={scanState !== null && scanState.endsWith('...')}
+          onClick={() => void scanWinners()}
+        >
+          75%
+        </button>
       </div>
+
+      {scanState !== null && (
+        <div className="wl-scan-note" onClick={() => setScanState(null)}>
+          {scanState}
+        </div>
+      )}
 
       {managing && (
         <div className="wl-adder">

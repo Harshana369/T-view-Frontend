@@ -45,6 +45,8 @@ interface AppState {
   renameGroup: (groupId: string, name: string) => void;
   removeGroup: (groupId: string) => void;
   /** Group එකක් දුන්නේ නැත්නම් active එකට (ALL නම් අන්තිමට පාවිච්චි කළ එකට). */
+  /** Group එකක coins ටික මුළුමනින්ම replace කරනවා (scan එකකින් වගේ). */
+  setGroupSymbols: (groupId: string, symbols: string[]) => void;
   addToWatchlist: (symbol: string, groupId?: string) => void;
   removeFromWatchlist: (symbol: string, groupId?: string) => void;
   addIndicator: (defId: string) => void;
@@ -110,6 +112,13 @@ export const useStore = create<AppState>()(
         }),
 
       /** දැනටමත් group එකේ තියෙනවා නම් දෙපාරක් දාන්නේ නෑ. */
+      setGroupSymbols: (groupId, symbols) =>
+        set((s) => ({
+          watchGroups: s.watchGroups.map((g) =>
+            g.id === groupId ? { ...g, symbols: [...symbols] } : g,
+          ),
+        })),
+
       addToWatchlist: (symbol, groupId) =>
         set((s) => {
           const target = targetGroupId(get(), groupId);

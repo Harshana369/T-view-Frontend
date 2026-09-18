@@ -990,3 +990,13 @@ body {
   font-size: 11px;
   cursor: pointer;
 }
+
+/* Win-rate scan එකේ තත්ත්වය — click කළාම අයින් වෙනවා. */
+.wl-scan-note {
+  background: #1e222d;
+  border-bottom: 1px solid #2a2e39;
+  color: #b2b5be;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 5px 10px;
+}
