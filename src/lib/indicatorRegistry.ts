@@ -2484,36 +2484,158 @@ export const INDICATORS: IndicatorDef[] = [
         text: `${t.dir === 1 ? 'L' : 'S'} ${t.r >= 0 ? '+' : ''}${t.r.toFixed(2)}R`,
       }));
 
-      // අන්තිම trade එකේ SL එකේ **පඩිපෙළ** — මුල් SL → break-even → trail.
+      // ── අන්තිම trade එක විස්තරාත්මකව ────────────────────────────────
+      // Replay එකේදී මේක **දැන් දුවන** trade එක — cursor එක ඉස්සරහට
+      // යනකොට SL එකේ පඩිපෙළ එකින් එක හැදෙනවා. අදියර තුන වෙන වෙනම
+      // පාටින් පේනවා:
+      //     රතු    = මුල් SL එක      (පාඩුවක් වෙන්න පුළුවන්)
+      //     තැඹිලි = break-even එකේ  (පාඩුවක් නෑ)
+      //     කොළ    = trail වෙනවා     (ලාභය අගුළු දාලා)
       const lastTrade = r.trades[r.trades.length - 1];
       if (lastTrade) {
+        const t = lastTrade;
+        const beAt = t.breakEvenIndex;
+        const trailAt = t.trailStartIndex;
+        const stageColor = (i: number) =>
+          trailAt >= 0 && i >= trailAt ? up : beAt >= 0 && i >= beAt ? TV.orange : down;
+
         const pts: LinePoint[] = [];
         let k = 0;
-        for (let i = lastTrade.index; i <= lastTrade.exitIndex; i++) {
-          while (k + 1 < lastTrade.stopPath.length && lastTrade.stopPath[k + 1].index <= i) k++;
-          pts.push({ time: at(i), value: lastTrade.stopPath[k].price });
+        for (let i = t.index; i <= t.exitIndex; i++) {
+          while (k + 1 < t.stopPath.length && t.stopPath[k + 1].index <= i) k++;
+          pts.push({ time: at(i), value: t.stopPath[k].price, color: stageColor(i) });
         }
         series.push({
-          key: 'stopPath', label: 'Stop (BE then trail)', type: 'line',
-          color: down, data: pts, lineWidth: 2,
+          key: 'stopPath',
+          label: 'Stop: red > orange (BE) > green (trail)',
+          type: 'line',
+          color: down,
+          data: pts,
+          lineWidth: 3,
         });
+
         segments.push({
-          time1: at(lastTrade.index),
-          time2: at(lastTrade.exitIndex),
-          price: lastTrade.entry,
-          color: lastTrade.dir === 1 ? up : down,
+          time1: at(t.index),
+          time2: at(t.exitIndex),
+          price: t.entry,
+          color: t.dir === 1 ? up : down,
           width: 2,
           label: {
-            text: `Entry > ${formatPrice(lastTrade.entry)}`,
-            background: lastTrade.dir === 1 ? up : down,
+            text: `${t.dir === 1 ? 'LONG' : 'SHORT'} entry > ${formatPrice(t.entry)}`,
+            background: t.dir === 1 ? up : down,
             color: '#fff',
           },
         });
+
+        // මුල් SL එක තිත් රේඛාවක් විදිහට තියාගන්නවා — SL එක කොච්චර
+        // දුරක් ගමන් කළාද කියලා ඇහැටම පේන්න.
+        segments.push({
+          time1: at(t.index),
+          time2: at(t.exitIndex),
+          price: t.initialSl,
+          color: withAlpha(down, 60),
+          width: 1,
+          dashed: true,
+          label: {
+            text: `initial SL > ${formatPrice(t.initialSl)}`,
+            background: withAlpha(down, 60),
+            color: '#fff',
+          },
+        });
+
+        // දැන් තියෙන SL එක — replay එකේදී මේක ඉස්සරහට ඇදෙනවා.
+        const riskNow = Math.abs(t.entry - t.initialSl);
+        const lockedR = ((t.finalSl - t.entry) * t.dir) / riskNow;
+        const stageName = t.startedTrailing
+          ? 'trailing'
+          : t.reachedBreakEven
+            ? 'break-even'
+            : 'initial';
+        segments.push({
+          time1: at(t.exitIndex),
+          time2: at(t.exitIndex),
+          price: t.finalSl,
+          color: stageColor(t.exitIndex),
+          width: 2,
+          label: {
+            text:
+              `SL (${stageName}) > ${formatPrice(t.finalSl)}  ` +
+              `[${lockedR >= 0 ? '+' : ''}${lockedR.toFixed(2)}R locked]`,
+            background: stageColor(t.exitIndex),
+            color: '#fff',
+          },
+        });
+
+        // අදියර මාරු වුණු bars — chart එකේ සලකුණු.
+        if (beAt >= 0) {
+          markers.push({
+            time: at(beAt),
+            position: t.dir === 1 ? 'belowBar' : 'aboveBar',
+            shape: 'circle',
+            color: TV.orange,
+            text: 'SL > BE',
+          });
+        }
+        if (trailAt >= 0) {
+          markers.push({
+            time: at(trailAt),
+            position: t.dir === 1 ? 'belowBar' : 'aboveBar',
+            shape: 'circle',
+            color: up,
+            text: 'trail on',
+          });
+        }
       }
 
       const s = r.stats;
       const profitable = s.expectancy > 0;
-      const rows: IndicatorPanelRow[] = [
+      const rows: IndicatorPanelRow[] = [];
+
+      // ── දැන් දුවන trade එක ──────────────────────────────────────────
+      // Replay එකේදී මේක bar එකෙන් bar එකට වෙනස් වෙනවා — trade එක
+      // කොහොමද දුවන්නේ කියලා ඇහැටම බලාගන්න පුළුවන්.
+      if (lastTrade) {
+        const t = lastTrade;
+        const riskNow = Math.abs(t.entry - t.initialSl);
+        const lastClose = candles[candles.length - 1].close;
+        const liveR = ((lastClose - t.entry) * t.dir) / riskNow;
+        const lockedR = ((t.finalSl - t.entry) * t.dir) / riskNow;
+        const live = t.reason === 'open';
+        const stageText = t.startedTrailing
+          ? 'trailing (profit locked)'
+          : t.reachedBreakEven
+            ? 'break-even (no loss)'
+            : 'initial stop (at risk)';
+        const stageColour = t.startedTrailing ? up : t.reachedBreakEven ? TV.orange : down;
+
+        rows.push({
+          label: live ? 'LIVE TRADE' : 'last trade',
+          value: t.dir === 1 ? 'LONG' : 'SHORT',
+          labelColor: live ? up : NEUTRAL,
+          valueColor: t.dir === 1 ? up : down,
+        });
+        rows.push({ label: '  Entry', value: formatPrice(t.entry) });
+        rows.push({ label: '  Stage', value: stageText, valueColor: stageColour });
+        rows.push({
+          label: '  Stop now',
+          value: `${formatPrice(t.finalSl)}  (${lockedR >= 0 ? '+' : ''}${lockedR.toFixed(2)}R)`,
+          valueColor: stageColour,
+        });
+        rows.push({
+          label: live ? '  Open P/L' : '  Result',
+          value: live
+            ? `${liveR >= 0 ? '+' : ''}${liveR.toFixed(2)}R`
+            : `${t.r >= 0 ? '+' : ''}${t.r.toFixed(2)}R (${t.reason})`,
+          valueColor: (live ? liveR : t.r) >= 0 ? up : down,
+        });
+        rows.push({
+          label: '  Best so far',
+          value: `${t.maxFavorableR >= 0 ? '+' : ''}${t.maxFavorableR.toFixed(2)}R`,
+        });
+        rows.push({ label: '', value: '' });
+      }
+
+      rows.push(
         { label: 'Trades', value: String(s.trades) },
         {
           label: 'Result',
@@ -2565,7 +2687,7 @@ export const INDICATORS: IndicatorDef[] = [
           label: '  Trail capture',
           value: s.trades ? `${(s.captureRatio * 100).toFixed(0)}% of best move` : '-',
         },
-      ];
+      );
 
       if (r.longStats.trades > 0 || r.shortStats.trades > 0) {
         rows.push({ label: '', value: '' });

@@ -79,8 +79,12 @@ export interface BbTrade {
   maxFavorableR: number;
   /** Break-even එකට ගියාද. */
   reachedBreakEven: boolean;
+  /** SL එක entry එකට ගෙනාපු bar එක (−1 = ගියේ නෑ). */
+  breakEvenIndex: number;
   /** Trail පටන් ගත්තාද. */
   startedTrailing: boolean;
+  /** Trail පටන් ගත්ත bar එක (−1 = පටන් ගත්තේ නෑ). */
+  trailStartIndex: number;
   /** SL එක ගමන් කරපු මග — chart එකේ පඩිපෙළ අඳින්න. */
   stopPath: { index: number; price: number }[];
 }
@@ -182,13 +186,16 @@ function runTrade(
   let best = 0;
   let reachedBreakEven = false;
   let startedTrailing = false;
+  let breakEvenIndex = -1;
+  let trailStartIndex = -1;
   const stopPath: { index: number; price: number }[] = [{ index: i, price: stop }];
 
   const finish = (j: number, price: number, reason: BbExitReason): BbTrade => ({
     index: i, dir, entry, initialSl, finalSl: stop,
     exitIndex: j, exitPrice: price, reason,
     r: ((price - entry) * dir) / risk - feeR,
-    maxFavorableR: best, reachedBreakEven, startedTrailing, stopPath,
+    maxFavorableR: best,
+    reachedBreakEven, breakEvenIndex, startedTrailing, trailStartIndex, stopPath,
   });
 
   for (let j = i + 1; j < candles.length; j++) {
@@ -226,6 +233,7 @@ function runTrade(
         stopPath.push({ index: j, price: stop });
       }
       reachedBreakEven = true;
+      breakEvenIndex = j;
     }
 
     // 4. Trail — ලාභය දිහාවට විතරයි, ආපහු නෑ.
@@ -234,6 +242,7 @@ function runTrade(
       const candidate = dir === 1 ? b.high - at * o.trailAtr : b.low + at * o.trailAtr;
       if (dir === 1 ? candidate > stop : candidate < stop) {
         stop = candidate;
+        if (!startedTrailing) trailStartIndex = j;
         startedTrailing = true;
         stopPath.push({ index: j, price: stop });
       }
