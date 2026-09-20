@@ -1082,3 +1082,152 @@ body {
 *::-webkit-scrollbar-corner {
   background: transparent;
 }
+
+
+/* ── Binance-style Position History ─────────────────────────────────── */
+
+/* Chart එකයි history එකයි එක තීරුවක — chart එක ඉතුරු ඉඩ ගන්නවා. */
+.chart-col {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+.chart-col .chart-wrap {
+  flex: 1;
+  min-height: 0;
+}
+
+.poshist {
+  background: #131722;
+  border-top: 1px solid #2a2e39;
+  display: flex;
+  flex-direction: column;
+  /* විවෘතව තියෙනකොට chart එකෙන් අඩක්ටත් වඩා ගන්නේ නෑ. */
+  max-height: 42%;
+  min-height: 0;
+}
+
+.poshist-closed {
+  max-height: none;
+}
+
+.poshist-head {
+  align-items: center;
+  border-bottom: 1px solid #2a2e39;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  padding: 0 8px;
+}
+
+.poshist-tab {
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: #787b86;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 8px 10px;
+}
+
+.poshist-tab:hover {
+  color: #d1d4dc;
+}
+
+.poshist-tab.active {
+  border-bottom-color: #f0b90b; /* Binance කහ */
+  color: #eaecef;
+}
+
+/* සාරාංශය දකුණට තල්ලු වෙනවා. */
+.poshist-sum {
+  align-items: baseline;
+  display: flex;
+  font-size: 11px;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.poshist-sum strong {
+  font-size: 13px;
+}
+
+.poshist-toggle {
+  background: none;
+  border: 0;
+  color: #787b86;
+  cursor: pointer;
+  font-size: 11px;
+  margin-left: 8px;
+  padding: 4px;
+}
+
+.poshist-toggle:hover {
+  color: #d1d4dc;
+}
+
+.poshist-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.poshist-empty {
+  color: #787b86;
+  font-size: 12px;
+  margin: 0;
+  padding: 16px 12px;
+}
+
+.poshist-table {
+  border-collapse: collapse;
+  font-size: 11px;
+  white-space: nowrap;
+  width: 100%;
+}
+
+.poshist-table th {
+  background: #131722;
+  color: #787b86;
+  font-weight: 400;
+  padding: 6px 10px;
+  position: sticky;
+  text-align: left;
+  top: 0;
+  z-index: 1;
+}
+
+.poshist-table td {
+  border-top: 1px solid #1e222d;
+  color: #d1d4dc;
+  padding: 5px 10px;
+}
+
+.poshist-table tbody tr:hover td {
+  background: #1a1e29;
+}
+
+.poshist-table .num {
+  text-align: right;
+}
+
+.poshist-sym {
+  color: #eaecef;
+}
+
+.poshist-lev {
+  color: #f0b90b;
+  font-size: 10px;
+}
+
+.poshist-liq {
+  background: #ef5350;
+  border-radius: 2px;
+  color: #fff;
+  font-size: 9px;
+  margin-left: 4px;
+  padding: 1px 3px;
+}

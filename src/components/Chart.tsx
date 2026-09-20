@@ -35,6 +35,7 @@ import {
   indicatorById,
   type IndicatorBarColor,
   type IndicatorPanel,
+  type PositionRecord,
 } from '../lib/indicatorRegistry';
 import { timeframeOf } from '../lib/timeframes';
 import type { Candle, Interval } from '../lib/types';
@@ -57,6 +58,8 @@ interface ChartProps {
   /** Data load වෙනවා / ඉවරයි කියලා දැනුම් දෙන්න. */
   onLoading?: (loading: boolean) => void;
   onError?: (message: string | null) => void;
+  /** Indicators වලින් එන position history එක — App එකට. */
+  onPositions?: (positions: PositionRecord[]) => void;
 }
 
 /** Candle එකකින් volume histogram bar එකක් හදනවා (කොළ/රතු පාටත් එක්ක). */
@@ -68,7 +71,14 @@ function volumeBar(c: Candle) {
   };
 }
 
-export function Chart({ symbol, interval, onPrice, onLoading, onError }: ChartProps) {
+export function Chart({
+  symbol,
+  interval,
+  onPrice,
+  onLoading,
+  onError,
+  onPositions,
+}: ChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
@@ -100,6 +110,10 @@ export function Chart({ symbol, interval, onPrice, onLoading, onError }: ChartPr
   // chart එක ආපහු හදන එක වළක්වන්න.
   const cbRef = useRef({ onPrice, onLoading, onError });
   cbRef.current = { onPrice, onLoading, onError };
+  // Effect එකේ dependency එකක් වෙන්නේ නෑ — හැම render එකකම indicators
+  // ආපහු ගණන් හදන්න ඕන නෑ.
+  const onPositionsRef = useRef(onPositions);
+  onPositionsRef.current = onPositions;
 
   // ------------------------------------------------------------ bar replay
   const replayActive = useReplayStore((s) => s.active);
@@ -377,6 +391,7 @@ export function Chart({ symbol, interval, onPrice, onLoading, onError }: ChartPr
     const bandPrimitives: BandFillPrimitive[] = [];
     const shapePrimitives: ShapesPrimitive[] = [];
     const nextPanels: IndicatorPanel[] = [];
+    const nextPositions: PositionRecord[] = [];
     // Candles වලට පාට දාන indicator එකක් තියෙනවා නම් (Pine `barcolor()` වගේ).
     let barColors: (IndicatorBarColor | undefined)[] | null = null;
 
@@ -401,7 +416,7 @@ export function Chart({ symbol, interval, onPrice, onLoading, onError }: ChartPr
     for (const instance of indicators) {
       const def = indicatorById(instance.defId);
       if (!def) continue;
-      const out = def.compute(candles, instance.params, { mtf });
+      const out = def.compute(candles, instance.params, { mtf, symbol, interval });
 
       // Series එකකට හරි 'separate' ඕන නම් විතරයි අලුත් pane එකක් හදන්නේ.
       const needsPane = out.series.some((s) => (s.pane ?? def.pane) === 'separate');
@@ -516,9 +531,11 @@ export function Chart({ symbol, interval, onPrice, onLoading, onError }: ChartPr
 
       if (out.panel) nextPanels.push(out.panel);
       if (out.barColors) barColors = out.barColors;
+      if (out.positions) nextPositions.push(...out.positions);
     }
 
     setPanels(nextPanels);
+    onPositionsRef.current?.(nextPositions);
 
     if (barColors) {
       const colors = barColors;

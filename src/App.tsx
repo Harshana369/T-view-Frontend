@@ -2,10 +2,12 @@ import { useState } from 'react';
 import { Chart } from './components/Chart';
 import { IndicatorMenu } from './components/IndicatorMenu';
 import { NotificationCenter } from './components/NotificationCenter';
+import { PositionHistory } from './components/PositionHistory';
 import { SymbolPicker } from './components/SymbolPicker';
 import { TimeframeBar } from './components/TimeframeBar';
 import { Watchlist } from './components/Watchlist';
 import { useStore } from './store';
+import type { PositionRecord } from './lib/indicatorRegistry';
 
 /**
  * මුළු app එකේ layout එක: උඩින් toolbar එක (coin picker, timeframe, indicators),
@@ -21,6 +23,8 @@ export default function App() {
   const [price, setPrice] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Chart එකේ indicators වලින් එන positions — පහළ drawer එකට.
+  const [positions, setPositions] = useState<PositionRecord[]>([]);
 
   return (
     <div className="app">
@@ -38,14 +42,18 @@ export default function App() {
       </header>
 
       <main className="body">
-        <div className="chart-wrap">
-          <Chart
-            symbol={symbol}
-            interval={interval}
-            onPrice={setPrice}
-            onLoading={setLoading}
-            onError={setError}
-          />
+        <div className="chart-col">
+          <div className="chart-wrap">
+            <Chart
+              symbol={symbol}
+              interval={interval}
+              onPrice={setPrice}
+              onLoading={setLoading}
+              onError={setError}
+              onPositions={setPositions}
+            />
+          </div>
+          <PositionHistory positions={positions} />
         </div>
         <Watchlist />
       </main>

@@ -93,6 +93,43 @@ export interface IndicatorPanel {
 }
 
 /** Indicator එකක් chart එකට දෙන දේවල් ඔක්කොම. */
+/**
+ * Binance එකේ **Position History** එකේ පේළියක්.
+ *
+ * Backtest එකක trade එකක් = ඇත්තට වහපු position එකක්. Binance එකේ
+ * පේන තීරු ටිකම මෙතන තියෙනවා, ඒ නිසා එතන පුරුදු විදිහටම කියවන්න
+ * පුළුවන්.
+ */
+export interface PositionRecord {
+  /** Chart එකෙන් එන්නේ — indicator එක coin එක දන්නේ නෑ. */
+  symbol: string;
+  interval: string;
+  dir: 1 | -1;
+  leverage: number;
+  /** Coin ගාණ. */
+  size: number;
+  notionalUsd: number;
+  marginUsd: number;
+  entryPrice: number;
+  /** වැහුණු මිල (Binance: "Avg Close Price"). */
+  closePrice: number;
+  /** Unix තත්පර. */
+  openedAt: number;
+  closedAt: number;
+  /** තාම වැහිලා නෑ නම් `true` — Binance එකේ Positions tab එකේ එක. */
+  open: boolean;
+  /** Fees + slippage අඩු කරපු අන්තිම ලාභය/පාඩුව. */
+  realizedUsd: number;
+  feeUsd: number;
+  /** Margin එකට සාපේක්ෂව. */
+  roePct: number;
+  /** R වලින් — backtest එකේ භාෂාව. */
+  r: number;
+  /** stop / breakeven / trail / target / opposite / open */
+  reason: string;
+  liquidated: boolean;
+}
+
 export interface IndicatorOutput {
   series: IndicatorSeries[];
   /** Candles වලට දාන පාට (index = candle index). */
@@ -104,12 +141,17 @@ export interface IndicatorOutput {
   /** තිරස් රේඛා + labels (Pine `line.new` / `label.new`). */
   segments?: ChartSegment[];
   panel?: IndicatorPanel;
+  /** Binance-style position history එකට පේළි. */
+  positions?: PositionRecord[];
 }
 
 /** compute() එකට යන අමතර data — දැනට උසස් timeframe candles විතරයි. */
 export interface IndicatorContext {
   /** Interval code එකෙන් — උදා: `mtf['5m']`. */
   mtf: Record<string, Candle[]>;
+  /** දැන් බලන coin එක — position history එකේ පේන්න ඕන. */
+  symbol: string;
+  interval: string;
 }
 
 export type ParamValue = number | string;
@@ -2473,7 +2515,7 @@ export const INDICATORS: IndicatorDef[] = [
       { key: 'marginUsd', label: 'Margin per trade ($)', default: 10, min: 1, max: 100000 },
       { key: 'leverage', label: 'Leverage (x)', default: 10, min: 1, max: 125 },
     ],
-    compute: (candles, p) => {
+    compute: (candles, p, ctx) => {
       const on = (key: string, fallback = 'On') => str(p, key, fallback) === 'On';
       const signalOpts = {
         rsiLength: num(p, 'rsiLength', 6),
@@ -2913,7 +2955,44 @@ export const INDICATORS: IndicatorDef[] = [
         }
       }
 
-      return { series, segments, markers, panel: { position: 'Top Right', rows } };
+      // ── Binance-style position history ──────────────────────────────
+      // Trade එකක් = position එකක්. `open` වුණු එක උඩම (Binance එකේ
+      // Positions tab එක වගේ), ඉතුරු ඒවා අලුත්ම එක මුලට.
+      const positions: PositionRecord[] = [];
+      for (const t of r.trades) {
+        const live = t.reason === 'open';
+        const tu = tradeUsd(t.dir, t.entry, t.initialSl, t.exitPrice, posOpts, feePct, slipPct);
+        if (!tu) continue;
+        positions.push({
+          symbol: ctx.symbol,
+          interval: ctx.interval,
+          dir: t.dir,
+          leverage,
+          size: tu.size,
+          notionalUsd: tu.notionalUsd,
+          marginUsd: tu.marginUsd,
+          entryPrice: t.entry,
+          closePrice: t.exitPrice,
+          openedAt: at(t.index) as number,
+          closedAt: at(t.exitIndex) as number,
+          open: live,
+          realizedUsd: tu.netUsd,
+          feeUsd: tu.costUsd,
+          roePct: tu.roePct,
+          r: t.r,
+          reason: t.reason,
+          liquidated: tu.liquidated,
+        });
+      }
+      positions.reverse();
+
+      return {
+        series,
+        segments,
+        markers,
+        positions,
+        panel: { position: 'Top Right', rows },
+      };
     },
   },
 ];
