@@ -1,6 +1,8 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import type { PositionRecord } from '../lib/indicatorRegistry';
+import { runGroupPnl, type GroupPnl } from '../lib/groupPnl';
 import { formatSize, formatUsd } from '../lib/position';
+import { useStore } from '../store';
 
 /**
  * Binance Futures එකේ **Positions / Position History** කොටස වගේ පහළ
@@ -18,7 +20,7 @@ const UP = '#26a69a';
 const DOWN = '#ef5350';
 const DIM = '#787b86';
 
-type Tab = 'open' | 'history';
+type Tab = 'open' | 'history' | 'group';
 
 /** Binance එකේ වගේ — "2026-09-18 14:30:15". */
 function stamp(unixSec: number): string {
@@ -59,6 +61,46 @@ export function PositionHistory({ positions }: { positions: PositionRecord[] }) 
   const [tab, setTab] = useState<Tab>('history');
   const [open, setOpen] = useState(true);
 
+  // ── Group PNL ────────────────────────────────────────────────────
+  const interval = useStore((st) => st.interval);
+  const watchGroups = useStore((st) => st.watchGroups);
+  const indicators = useStore((st) => st.indicators);
+  const [groupId, setGroupId] = useState('');
+  const [bars, setBars] = useState(3000);
+  const [group, setGroup] = useState<GroupPnl | null>(null);
+  const [busy, setBusy] = useState<{ done: number; total: number } | null>(null);
+  const [groupErr, setGroupErr] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+
+  // Chart එකේ තියෙන backtest indicator එකේ settings — group එකටත් ඒවාම.
+  const trailInstance = indicators.find((i) => i.defId === 'bbrsitrail');
+  const picked = watchGroups.find((g) => g.id === groupId) ?? watchGroups[0];
+
+  async function runGroup() {
+    if (!picked || !trailInstance) return;
+    abortRef.current?.abort();
+    const ac = new AbortController();
+    abortRef.current = ac;
+    setGroupErr(null);
+    setGroup(null);
+    setBusy({ done: 0, total: picked.symbols.length });
+    try {
+      const r = await runGroupPnl(
+        picked.symbols,
+        interval,
+        trailInstance.params,
+        bars,
+        (done, total) => setBusy({ done, total }),
+        ac.signal,
+      );
+      if (!ac.signal.aborted) setGroup(r);
+    } catch (err) {
+      setGroupErr(err instanceof Error ? err.message : 'asarthakayi');
+    } finally {
+      if (!ac.signal.aborted) setBusy(null);
+    }
+  }
+
   const live = useMemo(() => positions.filter((p) => p.open), [positions]);
   const closed = useMemo(() => positions.filter((p) => !p.open), [positions]);
 
@@ -92,8 +134,36 @@ export function PositionHistory({ positions }: { positions: PositionRecord[] }) 
         >
           Position History{closed.length > 0 ? ` (${closed.length})` : ''}
         </button>
+        <button
+          type="button"
+          className={`poshist-tab${tab === 'group' ? ' active' : ''}`}
+          onClick={() => setTab('group')}
+          title="Watchlist group ekaka hama coin ekakama Realized PNL"
+        >
+          Group PNL
+        </button>
 
-        {total.n > 0 && (
+        {tab === 'group' && group && (
+          <span className="poshist-sum">
+            <span className="dim">Gross</span>
+            <span style={{ color: group.totals.grossUsd >= 0 ? UP : DOWN }}>
+              {formatUsd(group.totals.grossUsd)}
+            </span>
+            <span className="dim">&minus; Fees</span>
+            <span className="poshist-fee">${group.totals.feeUsd.toFixed(2)}</span>
+            <span className="dim">=</span>
+            <span className="dim">Realized PNL</span>
+            <strong style={{ color: group.totals.realizedUsd >= 0 ? UP : DOWN }}>
+              {formatUsd(group.totals.realizedUsd)}
+            </strong>
+            <span className="dim">
+              {group.totals.wins}/{group.totals.trades} won &middot;{' '}
+              {group.rows.filter((r) => !r.error).length} coins
+              {group.totals.liquidated > 0 ? ` - ${group.totals.liquidated} liquidated` : ''}
+            </span>
+          </span>
+        )}
+        {tab !== 'group' && total.n > 0 && (
           <span className="poshist-sum">
             {/* Gross − fees = realized. එකතුව වෙනුවට **අඩු කිරීම**
                 පේන්න ඕන — නැත්නම් fees වෙනම යන එකක් වගේ පේනවා. */}
@@ -121,7 +191,134 @@ export function PositionHistory({ positions }: { positions: PositionRecord[] }) 
         </button>
       </header>
 
-      {open && (
+      {open && tab === 'group' && (
+        <div className="poshist-body">
+          <div className="poshist-controls">
+            <select value={picked?.id ?? ''} onChange={(e) => setGroupId(e.target.value)}>
+              {watchGroups.map((g) => (
+                <option key={g.id} value={g.id}>
+                  {g.name} ({g.symbols.length})
+                </option>
+              ))}
+            </select>
+            <label>
+              Candles
+              <input
+                type="number"
+                min={500}
+                max={20000}
+                step={500}
+                value={bars}
+                onChange={(e) => setBars(Math.max(500, Number(e.target.value) || 3000))}
+              />
+            </label>
+            <span className="dim">{interval}</span>
+            <button
+              type="button"
+              className="poshist-run"
+              disabled={!!busy || !picked || picked.symbols.length === 0 || !trailInstance}
+              onClick={runGroup}
+            >
+              {busy ? `Running ${busy.done}/${busy.total}...` : 'Run backtest'}
+            </button>
+            {busy && (
+              <button
+                type="button"
+                className="poshist-stop"
+                onClick={() => {
+                  abortRef.current?.abort();
+                  setBusy(null);
+                }}
+              >
+                Stop
+              </button>
+            )}
+          </div>
+
+          {!trailInstance ? (
+            <p className="poshist-empty">
+              Chart ekata "Bollinger + RSI - Break-even &amp; Trail Backtest" indicator eka
+              mulinma ekathu karanna &mdash; group ekata duwannet ekeh settings ekkamayi.
+            </p>
+          ) : groupErr ? (
+            <p className="poshist-empty">{groupErr}</p>
+          ) : !group ? (
+            <p className="poshist-empty">
+              {picked && picked.symbols.length > 0
+                ? `"${picked.name}" group eke coins ${picked.symbols.length} ta backtest eka duwawanna "Run backtest" ebenna.`
+                : 'Me group eke coins naha.'}
+            </p>
+          ) : (
+            <table className="poshist-table">
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th className="num">Trades</th>
+                  <th className="num">Win rate</th>
+                  <th className="num">Gross PNL</th>
+                  <th className="num">Fees</th>
+                  <th className="num">Realized PNL</th>
+                  <th className="num">Liq.</th>
+                </tr>
+              </thead>
+              <tbody>
+                {group.rows.map((r) => (
+                  <tr key={r.symbol}>
+                    <td className="poshist-sym">{r.symbol}</td>
+                    {r.error ? (
+                      <td className="dim" colSpan={6}>
+                        {r.error}
+                      </td>
+                    ) : (
+                      <>
+                        <td className="num">{r.trades}</td>
+                        <td className="num">
+                          {r.trades ? `${((100 * r.wins) / r.trades).toFixed(0)}%` : '-'}
+                        </td>
+                        <td className="num" style={{ color: r.grossUsd >= 0 ? UP : DOWN }}>
+                          {formatUsd(r.grossUsd)}
+                        </td>
+                        <td className="num poshist-fee">-${r.feeUsd.toFixed(2)}</td>
+                        <td
+                          className="num poshist-net"
+                          style={{ color: r.realizedUsd >= 0 ? UP : DOWN }}
+                        >
+                          {formatUsd(r.realizedUsd)}
+                        </td>
+                        <td className="num dim">{r.liquidated || ''}</td>
+                      </>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr className="poshist-total">
+                  <td>TOTAL</td>
+                  <td className="num">{group.totals.trades}</td>
+                  <td className="num">
+                    {group.totals.trades
+                      ? `${((100 * group.totals.wins) / group.totals.trades).toFixed(0)}%`
+                      : '-'}
+                  </td>
+                  <td className="num" style={{ color: group.totals.grossUsd >= 0 ? UP : DOWN }}>
+                    {formatUsd(group.totals.grossUsd)}
+                  </td>
+                  <td className="num poshist-fee">-${group.totals.feeUsd.toFixed(2)}</td>
+                  <td
+                    className="num poshist-net"
+                    style={{ color: group.totals.realizedUsd >= 0 ? UP : DOWN }}
+                  >
+                    {formatUsd(group.totals.realizedUsd)}
+                  </td>
+                  <td className="num dim">{group.totals.liquidated || ''}</td>
+                </tr>
+              </tfoot>
+            </table>
+          )}
+        </div>
+      )}
+
+      {open && tab !== 'group' && (
         <div className="poshist-body">
           {rows.length === 0 ? (
             <p className="poshist-empty">
