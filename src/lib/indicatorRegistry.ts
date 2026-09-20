@@ -2421,7 +2421,7 @@ export const INDICATORS: IndicatorDef[] = [
       // Ratio mode එකේදී මේක ඕන නෑ (BE එක ඉබේම එනවා) — 0 තියෙන්නේ ඒකයි.
       { key: 'beAt', label: 'Break-even at xR (0 = off)', default: 0, min: 0, max: 5, step: 0.1 },
       { key: 'beBuffer', label: 'Break-even buffer xR', default: 0.1, min: 0, max: 1, step: 0.05 },
-      { key: 'trailAfter', label: 'Start trailing at xR', default: 0, min: 0, max: 10, step: 0.1 },
+      { key: 'trailAfter', label: 'Start trailing at xR', default: 0.5, min: 0, max: 10, step: 0.1 },
       {
         key: 'trailMode',
         label: 'Trail method',
@@ -2430,7 +2430,10 @@ export const INDICATORS: IndicatorDef[] = [
         options: ['ratio', 'atr'],
       },
       // 0.5 = 1:2 — ලාභය +2R වුණාම SL එක +1R ට. Break-even එකත් ඉබේම.
-      { key: 'trailRatio', label: 'Lock ratio (0.5 = 1:2)', default: 0.5, min: 0, max: 0.95, step: 0.05 },
+      { key: 'trailRatio', label: 'Lock ratio (0.7 = keep 70%)', default: 0.7, min: 0, max: 0.95, step: 0.05 },
+      // SL එක entry එක ළඟින්ම නතර වෙන එක නවත්තනවා — trail පටන් ගත්ත
+      // ගමන් අඩුම තරමේ මෙච්චර R එකක් අගුළු දානවා.
+      { key: 'minLock', label: 'Min locked profit xR', default: 0.5, min: 0, max: 5, step: 0.1 },
       { key: 'trailAtr', label: 'Trail xATR (atr mode)', default: 2, min: 0, max: 15, step: 0.5 },
       { key: 'takeProfit', label: 'Take Profit xR (0 = off)', default: 0, min: 0, max: 20, step: 0.5 },
       { key: 'exitOpp', label: 'Exit on opposite signal', kind: 'switch', default: 'On' },
@@ -2447,6 +2450,13 @@ export const INDICATORS: IndicatorDef[] = [
       // ඉන්න දෙයක් නෙවෙයි (exit ක්‍රමයක් තෝරගන්නකම් විතරයි).
       { key: 'compare', label: 'Compare exit methods', kind: 'switch', default: 'Off' },
       // ── Binance-style position panel ──────────────────────────────
+      {
+        key: 'detail',
+        label: 'Panel detail',
+        kind: 'select',
+        default: 'simple',
+        options: ['simple', 'full'],
+      },
       { key: 'position', label: 'Position Panel', kind: 'switch', default: 'On' },
       { key: 'riskUsd', label: 'Risk per trade ($)', default: 6, min: 1, max: 100000 },
       { key: 'leverage', label: 'Leverage (x)', default: 10, min: 1, max: 125 },
@@ -2466,9 +2476,10 @@ export const INDICATORS: IndicatorDef[] = [
         initialSlAtr: num(p, 'initialSl', 2),
         breakEvenAtR: num(p, 'beAt', 0),
         breakEvenBufferR: num(p, 'beBuffer', 0.1),
-        trailAfterR: num(p, 'trailAfter', 0),
+        trailAfterR: num(p, 'trailAfter', 0.5),
         trailMode: str(p, 'trailMode', 'ratio') as 'ratio' | 'atr',
-        trailRatio: num(p, 'trailRatio', 0.5),
+        trailRatio: num(p, 'trailRatio', 0.7),
+        minLockR: num(p, 'minLock', 0.5),
         trailAtr: num(p, 'trailAtr', 2),
         takeProfitR: num(p, 'takeProfit', 0),
         exitOnOpposite: on('exitOpp'),
@@ -2500,7 +2511,7 @@ export const INDICATORS: IndicatorDef[] = [
         time: at(t.index),
         position: t.dir === 1 ? 'belowBar' : 'aboveBar',
         shape: t.dir === 1 ? 'arrowUp' : 'arrowDown',
-        // breakeven = අළු (පාඩුවක් නෑ), trail/target = කොළ, stop = රතු
+        // breakeven = තැඹිලි (පාඩුවක් නෑ), trail/target = කොළ, stop = රතු
         color:
           t.reason === 'open' ? NEUTRAL
           : t.reason === 'breakeven' ? TV.orange
@@ -2614,11 +2625,13 @@ export const INDICATORS: IndicatorDef[] = [
       const s = r.stats;
       const profitable = s.expectancy > 0;
       const rows: IndicatorPanelRow[] = [];
+      const riskUsd = num(p, 'riskUsd', 6);
+      const leverage = num(p, 'leverage', 10);
+      // `simple` — ඩොලර් වලින්, සරල වචන වලින්. `full` — R, PF, expectancy
+      // වගේ ඔක්කොම. Default එක simple.
+      const simple = str(p, 'detail', 'simple') !== 'full';
 
-      // ── දැන් දුවන position එක ────────────────────────────────────
-      // Binance Futures එකේ position row එක වගේ, ඒත් R තොරතුරුත් එකට.
-      // (කලින් මේක "LIVE TRADE" සහ "POSITION" කියලා දෙකක් තිබුණා —
-      //  Entry එකයි stop එකයි දෙකේම තිබුණු නිසා පේළි 5ක් නිකරුණේ ගියා.)
+      // ── දැන් තියෙන position එක ──────────────────────────────────────
       if (lastTrade) {
         const t = lastTrade;
         const riskNow = Math.abs(t.entry - t.initialSl);
@@ -2626,14 +2639,6 @@ export const INDICATORS: IndicatorDef[] = [
         const liveR = ((lastClose - t.entry) * t.dir) / riskNow;
         const lockedR = ((t.finalSl - t.entry) * t.dir) / riskNow;
         const live = t.reason === 'open';
-        const stageText = t.startedTrailing
-          ? 'trailing (locked)'
-          : t.reachedBreakEven
-            ? 'break-even (no loss)'
-            : 'initial stop (at risk)';
-        const stageColour = t.startedTrailing ? up : t.reachedBreakEven ? TV.orange : down;
-        const riskUsd = num(p, 'riskUsd', 6);
-        const leverage = num(p, 'leverage', 10);
         const pv = on('position')
           ? positionView(t.dir, t.entry, t.initialSl, t.finalSl, lastClose, {
               ...POSITION_DEFAULTS,
@@ -2641,6 +2646,14 @@ export const INDICATORS: IndicatorDef[] = [
               leverage,
             })
           : null;
+        // SL එක entry එක පනිලාද — ඒක තමයි වැදගත්ම දේ.
+        const locked = lockedR > 0;
+        const stageText = locked
+          ? 'profit locked in'
+          : t.reachedBreakEven
+            ? 'no loss (break-even)'
+            : 'still at risk';
+        const stageColour = locked ? up : t.reachedBreakEven ? TV.orange : down;
 
         rows.push({
           label: live ? 'POSITION' : 'LAST TRADE',
@@ -2649,158 +2662,191 @@ export const INDICATORS: IndicatorDef[] = [
           valueColor: t.dir === 1 ? up : down,
         });
         rows.push({ label: '  Stage', value: stageText, valueColor: stageColour });
-        if (pv) {
-          rows.push({
-            label: '  Size',
-            value: `${formatSize(pv.size)}  ($${pv.notionalUsd.toFixed(2)})`,
-          });
-        }
-        // Entry සහ mark එකම පේළියේ — දෙකම එකට බලන එකයි වැදගත්.
         rows.push({
-          label: '  Entry / Mark',
+          label: '  Entry / Now',
           value: `${formatPrice(t.entry)} / ${formatPrice(lastClose)}`,
         });
+        // ⭐ ඔබ ඉල්ලපු දේ: SL එක වැදුනොත් මොකද වෙන්නේ, ඩොලර් වලින්.
         rows.push({
-          label: '  Stop now',
-          value: `${formatPrice(t.finalSl)}  (${lockedR >= 0 ? '+' : ''}${lockedR.toFixed(2)}R)`,
-          valueColor: stageColour,
-        });
-        if (pv) {
-          rows.push({
-            label: '  Liq. Price',
-            value:
-              `${formatPrice(pv.liquidationPrice)}  ` +
-              `(${pv.liquidationDistancePct.toFixed(1)}% away)`,
-            valueColor: pv.liquidationDistancePct < 10 ? down : NEUTRAL,
-          });
-          rows.push({ label: '  Margin', value: `$${pv.marginUsd.toFixed(2)}` });
-        }
-        // ඩොලර්, ROE, R — තුනම එක පේළියක.
-        const pnlUsd = live ? (pv ? pv.unrealizedUsd : liveR * riskUsd) : t.r * riskUsd;
-        rows.push({
-          label: live ? '  PNL' : '  Result',
+          label: '  Stop',
           value:
-            `${formatUsd(pnlUsd)}` +
-            (pv ? `  (${pv.roePct >= 0 ? '+' : ''}${pv.roePct.toFixed(1)}%)` : '') +
-            `  ${(live ? liveR : t.r) >= 0 ? '+' : ''}${(live ? liveR : t.r).toFixed(2)}R` +
-            (live ? '' : ` ${t.reason}`),
+            `${formatPrice(t.finalSl)}` +
+            (pv ? `  →  ${formatUsd(pv.stopUsd)}` : `  (${lockedR >= 0 ? '+' : ''}${lockedR.toFixed(2)}R)`),
+          valueColor: (pv ? pv.stopUsd : lockedR) >= 0 ? up : down,
+        });
+        rows.push({
+          label: live ? '  Profit now' : '  Result',
+          value: pv
+            ? formatUsd(live ? pv.unrealizedUsd : t.r * riskUsd)
+            : `${(live ? liveR : t.r) >= 0 ? '+' : ''}${(live ? liveR : t.r).toFixed(2)}R`,
           valueColor: (live ? liveR : t.r) >= 0 ? up : down,
         });
-        if (pv) {
-          // SL එක entry එක පනිනකොට මේක ඍණ සිට ධන වෙනවා.
+
+        if (!simple) {
+          if (pv) {
+            rows.push({
+              label: '  Size',
+              value: `${formatSize(pv.size)}  ($${pv.notionalUsd.toFixed(2)})`,
+            });
+            rows.push({
+              label: '  Liq. Price',
+              value:
+                `${formatPrice(pv.liquidationPrice)}  ` +
+                `(${pv.liquidationDistancePct.toFixed(1)}% away)`,
+              valueColor: pv.liquidationDistancePct < 10 ? down : NEUTRAL,
+            });
+            rows.push({ label: '  Margin', value: `$${pv.marginUsd.toFixed(2)}` });
+          }
           rows.push({
-            label: '  If stop hits',
-            value: formatUsd(pv.stopUsd),
-            valueColor: pv.stopUsd >= 0 ? up : down,
+            label: '  In R',
+            value:
+              `${(live ? liveR : t.r) >= 0 ? '+' : ''}${(live ? liveR : t.r).toFixed(2)}R now, ` +
+              `${lockedR >= 0 ? '+' : ''}${lockedR.toFixed(2)}R locked`,
+          });
+          rows.push({
+            label: '  Best so far',
+            value: `${t.maxFavorableR >= 0 ? '+' : ''}${t.maxFavorableR.toFixed(2)}R`,
           });
         }
-        rows.push({
-          label: '  Best so far',
-          value: `${t.maxFavorableR >= 0 ? '+' : ''}${t.maxFavorableR.toFixed(2)}R`,
-        });
         rows.push({ label: '', value: '' });
       }
 
-      rows.push(
-        { label: 'Trades', value: String(s.trades) },
-        {
-          label: 'Result',
-          value: s.trades === 0 ? '-' : profitable ? 'PROFIT' : 'LOSS',
-          valueColor: profitable ? up : down,
-        },
-        {
-          label: 'Expectancy',
-          value: s.trades ? `${s.expectancy >= 0 ? '+' : ''}${s.expectancy.toFixed(3)}R` : '-',
-          valueColor: profitable ? up : down,
-        },
-        {
-          label: 'Total',
-          value: s.trades ? `${s.totalR >= 0 ? '+' : ''}${s.totalR.toFixed(1)}R` : '-',
-          valueColor: s.totalR > 0 ? up : down,
-        },
-        // Book කරලා තියෙන ලාභය — වැහුණු trades විතරයි.
-        {
-          label: 'Booked PNL',
-          value: s.trades ? formatUsd(s.totalR * num(p, 'riskUsd', 6)) : '-',
-          valueColor: s.totalR > 0 ? up : down,
-        },
-        { label: 'Win rate', value: s.trades ? `${s.winRate.toFixed(1)}%` : '-' },
-        {
-          label: 'Profit factor',
-          value: s.trades ? (Number.isFinite(s.profitFactor) ? s.profitFactor.toFixed(2) : 'inf') : '-',
-          valueColor: s.profitFactor >= 1 ? up : down,
-        },
-        { label: 'Max drawdown', value: s.trades ? `${s.maxDrawdownR.toFixed(1)}R` : '-', valueColor: TV.orange },
-        {
-          label: 'Cost / trade',
-          value: `fee ${num(p, 'fee', 0.045)}% + slip ${num(p, 'slip', 0.02)}%`,
-          valueColor: TV.orange,
-        },
-        { label: '', value: '' },
-        // ඔබ ඉල්ලපු දේ — SL එක කොහෙදි වැදුනාද කියන බෙදීම.
-        {
-          label: 'exit breakdown',
-          value: 'count',
+      // ── ප්‍රතිඵලය ────────────────────────────────────────────────────
+      if (simple) {
+        rows.push({
+          label: 'RESULT',
+          value: `${s.trades} trades`,
           labelColor: NEUTRAL,
-          valueColor: NEUTRAL,
-        },
-        {
-          label: '  Stop (loss)',
+        });
+        rows.push({
+          label: '  Booked',
+          value: s.trades ? formatUsd(s.totalR * riskUsd) : '-',
+          valueColor: s.totalR > 0 ? up : down,
+        });
+        rows.push({
+          label: '  Won',
+          value: s.trades ? `${s.wins} of ${s.trades}  (${s.winRate.toFixed(0)}%)` : '-',
+        });
+        // Exit එක වුණේ මොකෙන්ද — සරල වචන වලින්.
+        rows.push({
+          label: '  Stopped at a loss',
           value: String(s.byReason.stop),
-          valueColor: down,
-        },
-        {
-          label: '  Break-even (no loss)',
+          valueColor: s.byReason.stop > 0 ? down : NEUTRAL,
+        });
+        rows.push({
+          label: '  Closed with profit',
+          value: String(s.byReason.trail + s.byReason.target),
+          valueColor: up,
+        });
+        rows.push({
+          label: '  Closed at break-even',
           value: String(s.byReason.breakeven),
           valueColor: TV.orange,
-        },
-        {
-          label: '  Trail (locked profit)',
-          value: String(s.byReason.trail),
-          valueColor: up,
-        },
-        { label: '  Target / flip', value: `${s.byReason.target} / ${s.byReason.opposite}` },
-        {
-          label: '  Trail capture',
-          value: s.trades ? `${(s.captureRatio * 100).toFixed(0)}% of best move` : '-',
-        },
-      );
-
-      if (r.longStats.trades > 0 || r.shortStats.trades > 0) {
-        rows.push({ label: '', value: '' });
-        rows.push({ label: 'side', value: 'PF / expectancy / trades', labelColor: NEUTRAL, valueColor: NEUTRAL });
-        const side = (name: string, st: typeof s) => {
-          if (st.trades === 0) return;
-          rows.push({
-            label: `  ${name}`,
-            value:
-              `${Number.isFinite(st.profitFactor) ? st.profitFactor.toFixed(2) : 'inf'} / ` +
-              `${st.expectancy >= 0 ? '+' : ''}${st.expectancy.toFixed(3)}R / ${st.trades}`,
-            valueColor: st.expectancy > 0 ? up : down,
-          });
-        };
-        side('Long', r.longStats);
-        side('Short', r.shortStats);
-      }
-
-      if (on('compare', 'Off') && r.comparison.length > 0) {
-        rows.push({ label: '', value: '' });
-        rows.push({
-          label: 'exit method',
-          value: 'PF / expectancy / trades',
-          labelColor: NEUTRAL,
-          valueColor: NEUTRAL,
         });
-        for (const v of r.comparison) {
+      } else {
+        rows.push(
+          { label: 'Trades', value: String(s.trades) },
+          {
+            label: 'Result',
+            value: s.trades === 0 ? '-' : profitable ? 'PROFIT' : 'LOSS',
+            valueColor: profitable ? up : down,
+          },
+          {
+            label: 'Expectancy',
+            value: s.trades ? `${s.expectancy >= 0 ? '+' : ''}${s.expectancy.toFixed(3)}R` : '-',
+            valueColor: profitable ? up : down,
+          },
+          {
+            label: 'Total',
+            value: s.trades ? `${s.totalR >= 0 ? '+' : ''}${s.totalR.toFixed(1)}R` : '-',
+            valueColor: s.totalR > 0 ? up : down,
+          },
+          {
+            label: 'Booked PNL',
+            value: s.trades ? formatUsd(s.totalR * riskUsd) : '-',
+            valueColor: s.totalR > 0 ? up : down,
+          },
+          { label: 'Win rate', value: s.trades ? `${s.winRate.toFixed(1)}%` : '-' },
+          {
+            label: 'Profit factor',
+            value: s.trades
+              ? Number.isFinite(s.profitFactor)
+                ? s.profitFactor.toFixed(2)
+                : 'inf'
+              : '-',
+            valueColor: s.profitFactor >= 1 ? up : down,
+          },
+          {
+            label: 'Avg win / loss',
+            value: s.trades ? `+${s.avgWinR.toFixed(2)}R / ${s.avgLossR.toFixed(2)}R` : '-',
+          },
+          {
+            label: 'Max drawdown',
+            value: s.trades ? `${s.maxDrawdownR.toFixed(1)}R` : '-',
+            valueColor: TV.orange,
+          },
+          {
+            label: 'Cost / trade',
+            value: `fee ${num(p, 'fee', 0.045)}% + slip ${num(p, 'slip', 0.02)}%`,
+            valueColor: TV.orange,
+          },
+          { label: '', value: '' },
+          { label: 'exit breakdown', value: 'count', labelColor: NEUTRAL, valueColor: NEUTRAL },
+          { label: '  Stop (loss)', value: String(s.byReason.stop), valueColor: down },
+          {
+            label: '  Break-even (no loss)',
+            value: String(s.byReason.breakeven),
+            valueColor: TV.orange,
+          },
+          { label: '  Trail (locked profit)', value: String(s.byReason.trail), valueColor: up },
+          { label: '  Target / flip', value: `${s.byReason.target} / ${s.byReason.opposite}` },
+          {
+            label: '  Trail capture',
+            value: s.trades ? `${(s.captureRatio * 100).toFixed(0)}% of best move` : '-',
+          },
+        );
+
+        if (r.longStats.trades > 0 || r.shortStats.trades > 0) {
+          rows.push({ label: '', value: '' });
           rows.push({
-            label: `  ${v.name}`,
-            value:
-              v.stats.trades === 0
-                ? '-'
-                : `${Number.isFinite(v.stats.profitFactor) ? v.stats.profitFactor.toFixed(2) : 'inf'} / ` +
-                  `${v.stats.expectancy >= 0 ? '+' : ''}${v.stats.expectancy.toFixed(3)}R / ${v.stats.trades}`,
-            valueColor: v.stats.expectancy > 0 ? up : down,
+            label: 'side',
+            value: 'PF / expectancy / trades',
+            labelColor: NEUTRAL,
+            valueColor: NEUTRAL,
           });
+          const side = (name: string, st: typeof s) => {
+            if (st.trades === 0) return;
+            rows.push({
+              label: `  ${name}`,
+              value:
+                `${Number.isFinite(st.profitFactor) ? st.profitFactor.toFixed(2) : 'inf'} / ` +
+                `${st.expectancy >= 0 ? '+' : ''}${st.expectancy.toFixed(3)}R / ${st.trades}`,
+              valueColor: st.expectancy > 0 ? up : down,
+            });
+          };
+          side('Long', r.longStats);
+          side('Short', r.shortStats);
+        }
+
+        if (on('compare', 'Off') && r.comparison.length > 0) {
+          rows.push({ label: '', value: '' });
+          rows.push({
+            label: 'exit method',
+            value: 'PF / expectancy / trades',
+            labelColor: NEUTRAL,
+            valueColor: NEUTRAL,
+          });
+          for (const v of r.comparison) {
+            rows.push({
+              label: `  ${v.name}`,
+              value:
+                v.stats.trades === 0
+                  ? '-'
+                  : `${Number.isFinite(v.stats.profitFactor) ? v.stats.profitFactor.toFixed(2) : 'inf'} / ` +
+                    `${v.stats.expectancy >= 0 ? '+' : ''}${v.stats.expectancy.toFixed(3)}R / ${v.stats.trades}`,
+              valueColor: v.stats.expectancy > 0 ? up : down,
+            });
+          }
         }
       }
 
