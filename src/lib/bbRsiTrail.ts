@@ -29,6 +29,15 @@ export type BbExitReason =
   | 'opposite'
   | 'open';
 
+/**
+ * Signals කොහෙන් ආවත් එකම exit engine එක — entry bar එකයි දිශාවයි
+ * විතරයි ඕන.
+ */
+export interface TrailSignal {
+  index: number;
+  dir: 1 | -1;
+}
+
 export interface BbRsiTrailOptions {
   signal: BbRsiOptions;
   direction: 'both' | 'long' | 'short';
@@ -83,6 +92,12 @@ export interface BbRsiTrailOptions {
   slippagePct: number;
   maxRiskPct: number;
 }
+
+/**
+ * Exit engine එකට ඕන දේවල් — signals හදන විදිහ මේකේ නෑ.
+ * Bollinger+RSI, Sniper, ඕනෑම indicator එකක signals මේකට දාන්න පුළුවන්.
+ */
+export type TrailOptions = Omit<BbRsiTrailOptions, 'signal'>;
 
 export const BB_TRAIL_DEFAULTS: Omit<BbRsiTrailOptions, 'signal'> = {
   direction: 'both',
@@ -212,7 +227,7 @@ function runTrade(
   atr: number[],
   i: number,
   dir: 1 | -1,
-  o: BbRsiTrailOptions,
+  o: TrailOptions,
   opposite: Set<number>,
 ): BbTrade | null {
   const a = atr[i];
@@ -324,8 +339,8 @@ function runTrade(
 function runAll(
   candles: Candle[],
   atr: number[],
-  signals: { index: number; dir: 1 | -1 }[],
-  o: BbRsiTrailOptions,
+  signals: TrailSignal[],
+  o: TrailOptions,
 ): BbTrade[] {
   const trades: BbTrade[] = [];
   let busyUntil = -1;
@@ -340,7 +355,19 @@ function runAll(
   return trades;
 }
 
-export function computeBbRsiTrail(candles: Candle[], o: BbRsiTrailOptions): BbTrailResult {
+/**
+ * **Signals දීලා** backtest එක දුවවනවා — indicator එක මොකක් වුණත්.
+ *
+ * `computeBbRsiTrail` කරන්නේ Bollinger+RSI signals හදලා මේක call
+ * කරන එක විතරයි; `computeSniperTrail` කරන්නේ Sniper signals එක්ක
+ * එහෙමම. ඒ නිසා exit නීති (SL, break-even, trail, අවම අගුළු, fees)
+ * දෙකටම **හරියටම එකයි** — indicator දෙකක් සංසන්දනය කරද්දී ඒක ඕන.
+ */
+export function runTrailBacktest(
+  candles: Candle[],
+  rawSignals: TrailSignal[],
+  o: TrailOptions,
+): BbTrailResult {
   if (candles.length < 60) {
     return {
       trades: [], stats: emptyStats(),
@@ -348,18 +375,15 @@ export function computeBbRsiTrail(candles: Candle[], o: BbRsiTrailOptions): BbTr
     };
   }
 
-  const base = computeBbRsi(candles, o.signal);
-  const signals = base.signals
-    .filter((s) =>
-      o.direction === 'long' ? s.dir === 1 : o.direction === 'short' ? s.dir === -1 : true,
-    )
-    .map((s) => ({ index: s.index, dir: s.dir }));
+  const signals = rawSignals.filter((s) =>
+    o.direction === 'long' ? s.dir === 1 : o.direction === 'short' ? s.dir === -1 : true,
+  );
   const atr = atrArray(candles, o.atrLength);
 
   const trades = runAll(candles, atr, signals, o);
 
   // Break-even එකෙන් ඇත්තටම වෙනසක් වෙනවද — ඒක මනින්න.
-  const variants: { name: string; opts: Partial<BbRsiTrailOptions> }[] = [
+  const variants: { name: string; opts: Partial<TrailOptions> }[] = [
     { name: 'Current settings', opts: {} },
     { name: 'Lock 0.5R min (default)', opts: { trailMode: 'ratio', trailRatio: 0.7, breakEvenAtR: 0, trailAfterR: 0.5, minLockR: 0.5 } },
     { name: 'Lock 1.0R min (wider gap)', opts: { trailMode: 'ratio', trailRatio: 0.7, breakEvenAtR: 0, trailAfterR: 1, minLockR: 1 } },
@@ -381,4 +405,20 @@ export function computeBbRsiTrail(candles: Candle[], o: BbRsiTrailOptions): BbTr
     shortStats: summarise(trades.filter((t) => t.dir === -1)),
     comparison,
   };
+}
+
+/** Bollinger + RSI signals එක්ක — කලින් තිබුණු හැසිරීමම. */
+export function computeBbRsiTrail(candles: Candle[], o: BbRsiTrailOptions): BbTrailResult {
+  if (candles.length < 60) {
+    return {
+      trades: [], stats: emptyStats(),
+      longStats: emptyStats(), shortStats: emptyStats(), comparison: [],
+    };
+  }
+  const base = computeBbRsi(candles, o.signal);
+  return runTrailBacktest(
+    candles,
+    base.signals.map((s) => ({ index: s.index, dir: s.dir })),
+    o,
+  );
 }

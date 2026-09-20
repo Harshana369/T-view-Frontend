@@ -49,6 +49,8 @@ function emptyTotals(): GroupPnl['totals'] {
  * @param onProgress ඉවර වුණු coins ගාණ — progress bar එකට
  */
 export async function runGroupPnl(
+  /** කුමන backtest indicator එකද — 'bbrsitrail' හෝ 'snipertrail'. */
+  defId: string,
   symbols: string[],
   interval: Interval,
   params: Params,
@@ -56,8 +58,8 @@ export async function runGroupPnl(
   onProgress?: (done: number, total: number) => void,
   signal?: AbortSignal,
 ): Promise<GroupPnl> {
-  const def = indicatorById('bbrsitrail');
-  if (!def) throw new Error('bbrsitrail indicator එක නෑ');
+  const def = indicatorById(defId);
+  if (!def) throw new Error(`${defId} indicator එක නෑ`);
 
   const rows: SymbolPnl[] = [];
   const failed: string[] = [];

@@ -1,7 +1,8 @@
 import type { UTCTimestamp } from 'lightweight-charts';
 import type { BandPoint } from './bandFill';
 import { computeBbRsi } from './bbRsi';
-import { computeBbRsiTrail, BB_TRAIL_DEFAULTS } from './bbRsiTrail';
+import { computeBbRsiTrail, BB_TRAIL_DEFAULTS, type BbTrailResult } from './bbRsiTrail';
+import { computeSniperTrail, SNIPER_TRAIL_DEFAULTS } from './sniperTrail';
 import { positionView, tradeUsd, POSITION_DEFAULTS, formatSize, formatUsd } from './position';
 import { computeBreakoutTargets } from './breakoutTargets';
 import { computeElliottWave } from './elliottWave';
@@ -2549,22 +2550,200 @@ export const INDICATORS: IndicatorDef[] = [
       });
 
       const up = '#26a69a';
+      const view = buildTrailView(candles, r, p, ctx);
+      const { segments, markers, positions, rows } = view;
+      const series = view.series;
+      void up;
+
+      if (on('showBands')) {
+        const bb = computeBbRsi(candles, signalOpts);
+        series.unshift({
+          key: 'lower', label: 'BB Lower', type: 'line', color: withAlpha('#C0C0C0', 55),
+          data: toPoints(candles, bb.lower), lineWidth: 1, lastValueVisible: false,
+        });
+        series.unshift({
+          key: 'upper', label: 'BB Upper', type: 'line', color: withAlpha('#C0C0C0', 55),
+          data: toPoints(candles, bb.upper), lineWidth: 1, lastValueVisible: false,
+        });
+      }
+
+      return {
+        series,
+        segments,
+        markers,
+        positions,
+        panel: { position: 'Top Right', rows },
+      };
+    },
+  },
+  {
+    id: 'snipertrail',
+    name: 'Sniper V.02 - Break-even & Trail Backtest',
+    pane: 'main',
+    // Sniper එකේ ලකුණු 7 න් එකක් 5m RSI එකෙන් — dashboard එකට ඕන.
+    // (Entry signal එක EMA cross එකෙන් විතරයි, ඒකට 5m ඕන නෑ.)
+    mtf: '5m',
+    params: [
+      {
+        key: 'direction',
+        label: 'Direction',
+        kind: 'select',
+        default: 'both',
+        options: ['both', 'long', 'short'],
+      },
+      { key: 'fast', label: 'Fast EMA', default: 9, min: 2, max: 200 },
+      { key: 'mid', label: 'Mid EMA', default: 21, min: 2, max: 200 },
+      { key: 'slow', label: 'Slow EMA', default: 50, min: 2, max: 400 },
+      // Sniper dashboard එකේ ලකුණු ප්‍රතිශතය — මේකට වඩා වැඩි නම්
+      // විතරයි trade එකක් ගන්නේ. 0 = හැම cross එකක්ම.
+      { key: 'minScore', label: 'Min score % (0 = off)', default: 0, min: 0, max: 100, step: 1 },
+      { key: 'initialSl', label: 'Initial SL xATR', default: 2, min: 0.2, max: 10, step: 0.1 },
+      { key: 'beAt', label: 'Break-even at xR (0 = off)', default: 0, min: 0, max: 5, step: 0.1 },
+      { key: 'beBuffer', label: 'Break-even buffer xR', default: 0.1, min: 0, max: 1, step: 0.05 },
+      { key: 'trailAfter', label: 'Start trailing at xR', default: 0.5, min: 0, max: 10, step: 0.1 },
+      {
+        key: 'trailMode',
+        label: 'Trail method',
+        kind: 'select',
+        default: 'ratio',
+        options: ['ratio', 'atr'],
+      },
+      { key: 'trailRatio', label: 'Lock ratio (0.7 = keep 70%)', default: 0.7, min: 0, max: 0.95, step: 0.05 },
+      { key: 'minLock', label: 'Min locked profit xR', default: 0.5, min: 0, max: 5, step: 0.1 },
+      { key: 'trailAtr', label: 'Trail xATR (atr mode)', default: 2, min: 0, max: 15, step: 0.5 },
+      { key: 'takeProfit', label: 'Take Profit xR (0 = off)', default: 0, min: 0, max: 20, step: 0.5 },
+      { key: 'exitOpp', label: 'Exit on opposite signal', kind: 'switch', default: 'On' },
+      { key: 'atrLength', label: 'ATR Length', default: 14, min: 1, max: 200 },
+      { key: 'fee', label: 'Fee % (per side)', default: 0.045, min: 0, max: 0.2, step: 0.001 },
+      { key: 'slip', label: 'Slippage % (per side)', default: 0.02, min: 0, max: 0.5, step: 0.005 },
+      { key: 'maxRisk', label: 'Max Risk %', default: 10, min: 0.5, max: 50, step: 0.5 },
+      { key: 'showEmas', label: 'Show EMA ribbon', kind: 'switch', default: 'On' },
+      { key: 'compare', label: 'Compare exit methods', kind: 'switch', default: 'Off' },
+      {
+        key: 'detail',
+        label: 'Panel detail',
+        kind: 'select',
+        default: 'simple',
+        options: ['simple', 'full'],
+      },
+      { key: 'position', label: 'Position Panel', kind: 'switch', default: 'On' },
+      {
+        key: 'sizing',
+        label: 'Sizing',
+        kind: 'select',
+        default: 'risk',
+        options: ['risk', 'margin'],
+      },
+      { key: 'riskUsd', label: 'Risk per trade ($)', default: 6, min: 1, max: 100000 },
+      { key: 'marginUsd', label: 'Margin per trade ($)', default: 10, min: 1, max: 100000 },
+      { key: 'leverage', label: 'Leverage (x)', default: 10, min: 1, max: 125 },
+    ],
+    compute: (candles, p, ctx) => {
+      const on = (key: string, fallback = 'On') => str(p, key, fallback) === 'On';
+      // Chart එකේදී 5m candles එනවා; Group PNL / Tune වලදී නෑ. Entry
+      // signal එකට ඒක ඕන නෑ (EMA cross එකයි), ඒ නිසා දෙකේදීම signals
+      // එකයි — `minScore` පෙරහනට විතරයි වෙනස.
+      const htf = ctx.mtf['5m'] ?? [];
+      const rsiHigherTf = alignHigherTimeframe(candles, htf, rsiOfPreviousClose(htf, 14));
+      const signalOpts = {
+        fast: num(p, 'fast', 9),
+        mid: num(p, 'mid', 21),
+        slow: num(p, 'slow', 50),
+        rsiHigherTf,
+      };
+
+      const r = computeSniperTrail(candles, {
+        ...SNIPER_TRAIL_DEFAULTS,
+        signal: signalOpts,
+        minScorePct: num(p, 'minScore', 0),
+        direction: str(p, 'direction', 'both') as 'both' | 'long' | 'short',
+        atrLength: num(p, 'atrLength', 14),
+        initialSlAtr: num(p, 'initialSl', 2),
+        breakEvenAtR: num(p, 'beAt', 0),
+        breakEvenBufferR: num(p, 'beBuffer', 0.1),
+        trailAfterR: num(p, 'trailAfter', 0.5),
+        trailMode: str(p, 'trailMode', 'ratio') as 'ratio' | 'atr',
+        trailRatio: num(p, 'trailRatio', 0.7),
+        minLockR: num(p, 'minLock', 0.5),
+        trailAtr: num(p, 'trailAtr', 2),
+        takeProfitR: num(p, 'takeProfit', 0),
+        exitOnOpposite: on('exitOpp'),
+        feePct: num(p, 'fee', 0.045),
+        slippagePct: num(p, 'slip', 0.02),
+        maxRiskPct: num(p, 'maxRisk', 10),
+      });
+
+      const view = buildTrailView(candles, r, p, ctx);
+      const series = view.series;
+
+      if (on('showEmas')) {
+        const sn = computeSniper(candles, signalOpts);
+        // Ribbon එක යටින් — SL path එක උඩින් පේන්න ඕන.
+        series.unshift({
+          key: 'emaSlow', label: `EMA ${signalOpts.slow}`, type: 'line',
+          color: withAlpha('#787b86', 70), data: toPoints(candles, sn.emaSlow),
+          lineWidth: 1, lastValueVisible: false,
+        });
+        series.unshift({
+          key: 'emaMid', label: `EMA ${signalOpts.mid}`, type: 'line',
+          color: withAlpha('#ef5350', 70), data: toPoints(candles, sn.emaMid),
+          lineWidth: 1, lastValueVisible: false,
+        });
+        series.unshift({
+          key: 'emaFast', label: `EMA ${signalOpts.fast}`, type: 'line',
+          color: withAlpha('#26a69a', 70), data: toPoints(candles, sn.emaFast),
+          lineWidth: 1, lastValueVisible: false,
+        });
+      }
+
+      return {
+        series,
+        segments: view.segments,
+        markers: view.markers,
+        positions: view.positions,
+        panel: { position: 'Top Right', rows: view.rows },
+      };
+    },
+  },
+];
+
+/** id එකෙන් indicator definition එක හොයාගන්නවා. */
+export function indicatorById(id: string): IndicatorDef | undefined {
+  return INDICATORS.find((d) => d.id === id);
+}
+
+/** Indicator එකක් අලුතෙන් add කරනකොට යොදන default param අගයන්. */
+export function defaultParams(def: IndicatorDef): Params {
+  const p: Params = {};
+  for (const param of def.params) p[param.key] = param.default;
+  return p;
+}
+
+/**
+ * Trail backtest එකක **chart + panel** කොටස.
+ *
+ * Bollinger+RSI එකයි Sniper එකයි දෙකටම එකම දේවල් ඕන: entry markers,
+ * SL එකේ පඩිපෙළ, entry/SL රේඛා, position history, සහ panel එක. Signals
+ * හදන විදිහ විතරයි වෙනස — ඒ නිසා මේක එක තැනක තියාගන්නවා.
+ */
+function buildTrailView(
+  candles: Candle[],
+  r: BbTrailResult,
+  p: Params,
+  ctx: { symbol: string; interval: string },
+): {
+  series: IndicatorSeries[];
+  segments: ChartSegment[];
+  markers: IndicatorMarker[];
+  positions: PositionRecord[];
+  rows: IndicatorPanelRow[];
+} {
+  const on = (key: string, fallback = 'On') => str(p, key, fallback) === 'On';
+      const up = '#26a69a';
       const down = '#ef5350';
       const at = (index: number) => candles[index].time;
       const series: IndicatorSeries[] = [];
       const segments: ChartSegment[] = [];
-
-      if (on('showBands')) {
-        const bb = computeBbRsi(candles, signalOpts);
-        series.push({
-          key: 'upper', label: 'BB Upper', type: 'line', color: withAlpha('#C0C0C0', 55),
-          data: toPoints(candles, bb.upper), lineWidth: 1, lastValueVisible: false,
-        });
-        series.push({
-          key: 'lower', label: 'BB Lower', type: 'line', color: withAlpha('#C0C0C0', 55),
-          data: toPoints(candles, bb.lower), lineWidth: 1, lastValueVisible: false,
-        });
-      }
 
       // Entry markers — ප්‍රතිඵලය R වලින්, exit වුණේ මොකෙන්ද පාටින්.
       const markers: IndicatorMarker[] = r.trades.map((t) => ({
@@ -3020,26 +3199,6 @@ export const INDICATORS: IndicatorDef[] = [
         });
       }
       positions.reverse();
-
-      return {
-        series,
-        segments,
-        markers,
-        positions,
-        panel: { position: 'Top Right', rows },
-      };
-    },
-  },
-];
-
-/** id එකෙන් indicator definition එක හොයාගන්නවා. */
-export function indicatorById(id: string): IndicatorDef | undefined {
-  return INDICATORS.find((d) => d.id === id);
+  return { series, segments, markers, positions, rows };
 }
 
-/** Indicator එකක් අලුතෙන් add කරනකොට යොදන default param අගයන්. */
-export function defaultParams(def: IndicatorDef): Params {
-  const p: Params = {};
-  for (const param of def.params) p[param.key] = param.default;
-  return p;
-}

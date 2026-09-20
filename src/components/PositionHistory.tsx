@@ -96,7 +96,19 @@ export function PositionHistory({ positions }: { positions: PositionRecord[] }) 
   }, [tab, allCoins.length]);
 
   // Chart එකේ තියෙන backtest indicator එකේ settings — group එකටත් ඒවාම.
-  const trailInstance = indicators.find((i) => i.defId === 'bbrsitrail');
+  // Backtest indicator දෙකක් තියෙනවා — Bollinger+RSI සහ Sniper. Chart
+  // එකේ තියෙන ඒවා විතරයි මෙතන තෝරන්න පුළුවන් (settings ඒවායින්මයි
+  // එන්නේ, ඒ නිසා මෙතන පේන ගණන chart එකට ගැළපෙනවා).
+  const BACKTEST_DEFS: { id: string; label: string }[] = [
+    { id: 'bbrsitrail', label: 'Bollinger + RSI' },
+    { id: 'snipertrail', label: 'Sniper V.02' },
+  ];
+  const available = BACKTEST_DEFS.filter((d) => indicators.some((i) => i.defId === d.id));
+  const [defId, setDefId] = useState('');
+  const activeDefId = available.some((d) => d.id === defId)
+    ? defId
+    : (available[0]?.id ?? '');
+  const trailInstance = indicators.find((i) => i.defId === activeDefId);
 
   // Dropdown එකේ පේන ලැයිස්තුව — "All coins" උඩම, ඊට පස්සේ user groups.
   const options = useMemo(
@@ -127,6 +139,7 @@ export function PositionHistory({ positions }: { positions: PositionRecord[] }) 
     setBusy({ done: 0, total: picked.symbols.length });
     try {
       const r = await runGroupPnl(
+        activeDefId,
         picked.symbols,
         interval,
         trailInstance.params,
@@ -242,6 +255,15 @@ export function PositionHistory({ positions }: { positions: PositionRecord[] }) 
                 </option>
               ))}
             </select>
+            {available.length > 1 && (
+              <select value={activeDefId} onChange={(e) => setDefId(e.target.value)}>
+                {available.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.label}
+                  </option>
+                ))}
+              </select>
+            )}
             <label>
               Candles
               <input
