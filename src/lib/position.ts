@@ -14,19 +14,61 @@
  * ඒකෙන් වෙනස් වෙන්නේ **margin** එකයි **liq. price** එකයි විතරයි.)
  */
 
+/**
+ * Size එක තීරණය වෙන ක්‍රම දෙක.
+ *
+ * `risk`   — "trade එකකට වැඩිම වශයෙන් $X ක් අහිමි වෙන්න පුළුවන්".
+ *            SL එක ළඟ නම් size එක ලොකුයි, ඈත නම් පොඩියි. Leverage
+ *            එකෙන් පාඩුව වෙනස් වෙන්නේ නෑ — margin එක විතරයි.
+ *
+ * `margin` — "trade එකකට $X ක් දානවා, 10x වලින්".
+ *            notional = $X × leverage. Size එක SL එක ගැන බලන්නේ නෑ,
+ *            ඒ නිසා **හැම trade එකකම පාඩුව වෙනස්**. SL එක ඈත නම්
+ *            පාඩුව ලොකුයි — සහ liquidation එකට වැදෙන්නත් පුළුවන්.
+ */
+export type SizingMode = 'risk' | 'margin';
+
 export interface PositionOptions {
-  /** Trade එකකට අවදානමට දාන ඩොලර් ගණන. */
+  /** Size එක හදන ක්‍රමය. */
+  sizing: SizingMode;
+  /** `risk` mode — trade එකකට අවදානමට දාන ඩොලර් ගණන. */
   riskUsd: number;
+  /** `margin` mode — trade එකකට දාන ඩොලර් ගණන (notional = මේක × lev). */
+  marginUsd: number;
   leverage: number;
   /** Maintenance margin rate — Binance එකේ tier 1 එකට 0.4% විතර. */
   maintenanceMarginRate: number;
 }
 
 export const POSITION_DEFAULTS: PositionOptions = {
+  sizing: 'risk',
   riskUsd: 6,
+  marginUsd: 10,
   leverage: 10,
   maintenanceMarginRate: 0.004,
 };
+
+/**
+ * Size එකයි notional එකයi margin එකයි — mode එක අනුව.
+ * `risk` mode එකට SL එක ඕන; `margin` mode එකට ඕන නෑ.
+ */
+export function sizeFor(
+  entry: number,
+  initialSl: number,
+  o: PositionOptions,
+): { size: number; notionalUsd: number; marginUsd: number } | null {
+  if (!(entry > 0) || !(o.leverage > 0)) return null;
+  if (o.sizing === 'margin') {
+    if (!(o.marginUsd > 0)) return null;
+    const notionalUsd = o.marginUsd * o.leverage;
+    return { size: notionalUsd / entry, notionalUsd, marginUsd: o.marginUsd };
+  }
+  const riskPerCoin = Math.abs(entry - initialSl);
+  if (!(riskPerCoin > 0)) return null;
+  const size = o.riskUsd / riskPerCoin;
+  const notionalUsd = size * entry;
+  return { size, notionalUsd, marginUsd: notionalUsd / o.leverage };
+}
 
 export interface PositionView {
   dir: 1 | -1;
@@ -71,12 +113,9 @@ export function positionView(
   mark: number,
   o: PositionOptions,
 ): PositionView | null {
-  const riskPerCoin = Math.abs(entry - initialSl);
-  if (!(riskPerCoin > 0) || !(entry > 0) || !(o.leverage > 0)) return null;
-
-  const size = o.riskUsd / riskPerCoin;
-  const notionalUsd = size * entry;
-  const marginUsd = notionalUsd / o.leverage;
+  const sz = sizeFor(entry, initialSl, o);
+  if (!sz) return null;
+  const { size, notionalUsd, marginUsd } = sz;
 
   const unrealizedUsd = size * (mark - entry) * dir;
   const roePct = marginUsd > 0 ? (unrealizedUsd / marginUsd) * 100 : 0;
@@ -100,6 +139,70 @@ export function positionView(
     liquidationDistancePct: (Math.abs(mark - liquidationPrice) / mark) * 100,
     stopUsd: size * (stop - entry) * dir,
     stopPrice: stop,
+  };
+}
+
+export interface TradeUsd {
+  size: number;
+  notionalUsd: number;
+  marginUsd: number;
+  /** Fees/slippage වලට කලින්. */
+  grossUsd: number;
+  /** Fees + slippage, පැත්ත දෙකටම. */
+  costUsd: number;
+  /** අන්තිම ප්‍රතිඵලය — liquidation එකෙන් කපලා. */
+  netUsd: number;
+  /** Margin එකට සාපේක්ෂව. */
+  roePct: number;
+  /**
+   * SL එකට කලින් liquidation එකට වැදුණාද.
+   *
+   * 10x වලදී liq. එක entry එකෙන් ~9.6%ක් ඈතයි. SL එක 2×ATR ක් නම්,
+   * ATR එක මිලෙන් 4.8% ට වඩා ලොකු වුණොත් **SL එකට කලින්** liq. එකට
+   * වැදෙනවා — එතකොට දාපු මුළු margin එකම යනවා.
+   */
+  liquidated: boolean;
+}
+
+/**
+ * Trade එකක ප්‍රතිඵලය ඩොලර් වලින්.
+ *
+ * ⚠️ `margin` mode එකේදී පාඩුව margin එකෙන් කපනවා — isolated margin
+ *    එකක liquidation එකෙන් එහාට යන්න බෑ. ඒ නිසා ඍණ පැත්ත සීමිතයි,
+ *    ඒත් **ඒ සීමාවට ගොඩක් trades වදිනවා** නම් ඒක හොඳ ලකුණක් නෙවෙයි.
+ */
+export function tradeUsd(
+  dir: 1 | -1,
+  entry: number,
+  initialSl: number,
+  exitPrice: number,
+  o: PositionOptions,
+  feePct: number,
+  slippagePct: number,
+): TradeUsd | null {
+  const sz = sizeFor(entry, initialSl, o);
+  if (!sz) return null;
+  const { size, notionalUsd, marginUsd } = sz;
+
+  const grossUsd = size * (exitPrice - entry) * dir;
+  // පැත්ත දෙකේම notional එකට — ඇතුළු වෙනකොට සහ පිටවෙනකොට.
+  const rate = (feePct + slippagePct) / 100;
+  const costUsd = size * entry * rate + size * exitPrice * rate;
+
+  let netUsd = grossUsd - costUsd;
+  // Isolated — margin එකට වඩා අහිමි වෙන්නේ නෑ.
+  const liquidated = netUsd < -marginUsd;
+  if (liquidated) netUsd = -marginUsd;
+
+  return {
+    size,
+    notionalUsd,
+    marginUsd,
+    grossUsd,
+    costUsd,
+    netUsd,
+    roePct: marginUsd > 0 ? (netUsd / marginUsd) * 100 : 0,
+    liquidated,
   };
 }
 

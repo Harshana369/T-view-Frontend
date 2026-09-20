@@ -2,7 +2,7 @@ import type { UTCTimestamp } from 'lightweight-charts';
 import type { BandPoint } from './bandFill';
 import { computeBbRsi } from './bbRsi';
 import { computeBbRsiTrail, BB_TRAIL_DEFAULTS } from './bbRsiTrail';
-import { positionView, POSITION_DEFAULTS, formatSize, formatUsd } from './position';
+import { positionView, tradeUsd, POSITION_DEFAULTS, formatSize, formatUsd } from './position';
 import { computeBreakoutTargets } from './breakoutTargets';
 import { computeElliottWave } from './elliottWave';
 import { formatPrice } from './format';
@@ -2458,7 +2458,19 @@ export const INDICATORS: IndicatorDef[] = [
         options: ['simple', 'full'],
       },
       { key: 'position', label: 'Position Panel', kind: 'switch', default: 'On' },
+      // `risk`   — trade එකකට අහිමි වෙන්න පුළුවන් උපරිමය $X (SL එකෙන්
+      //            size එක හැදෙනවා). Leverage එක margin එකට විතරයි.
+      // `margin` — trade එකකට $X ක් දානවා, notional = $X × leverage.
+      //            පාඩුව හැම trade එකකම වෙනස් — liquidation එකත් තියෙනවා.
+      {
+        key: 'sizing',
+        label: 'Sizing',
+        kind: 'select',
+        default: 'risk',
+        options: ['risk', 'margin'],
+      },
       { key: 'riskUsd', label: 'Risk per trade ($)', default: 6, min: 1, max: 100000 },
+      { key: 'marginUsd', label: 'Margin per trade ($)', default: 10, min: 1, max: 100000 },
       { key: 'leverage', label: 'Leverage (x)', default: 10, min: 1, max: 125 },
     ],
     compute: (candles, p) => {
@@ -2627,6 +2639,36 @@ export const INDICATORS: IndicatorDef[] = [
       const rows: IndicatorPanelRow[] = [];
       const riskUsd = num(p, 'riskUsd', 6);
       const leverage = num(p, 'leverage', 10);
+      const posOpts = {
+        ...POSITION_DEFAULTS,
+        sizing: str(p, 'sizing', 'risk') as 'risk' | 'margin',
+        riskUsd,
+        marginUsd: num(p, 'marginUsd', 10),
+        leverage,
+      };
+      const feePct = num(p, 'fee', 0.045);
+      const slipPct = num(p, 'slip', 0.02);
+      const byMargin = posOpts.sizing === 'margin';
+
+      // ඩොලර් එකතුව — `risk` mode එකේදී මේක totalR × riskUsd ට සමානයි,
+      // ඒත් `margin` mode එකේදී trade එකකට size එක වෙනස් නිසා එකින් එක
+      // ගණන් හදන්නම ඕන (liquidation එකත් එක්කම).
+      let netUsd = 0;
+      let liquidations = 0;
+      let usdWins = 0;
+      let usdGross = 0;
+      let usdLoss = 0;
+      let usdTrades = 0;
+      for (const t of r.trades) {
+        if (t.reason === 'open') continue;
+        const tu = tradeUsd(t.dir, t.entry, t.initialSl, t.exitPrice, posOpts, feePct, slipPct);
+        if (!tu) continue;
+        usdTrades++;
+        netUsd += tu.netUsd;
+        if (tu.liquidated) liquidations++;
+        if (tu.netUsd > 0) { usdWins++; usdGross += tu.netUsd; } else usdLoss += -tu.netUsd;
+      }
+      const usdPf = usdLoss > 0 ? usdGross / usdLoss : Infinity;
       // `simple` — ඩොලර් වලින්, සරල වචන වලින්. `full` — R, PF, expectancy
       // වගේ ඔක්කොම. Default එක simple.
       const simple = str(p, 'detail', 'simple') !== 'full';
@@ -2640,11 +2682,7 @@ export const INDICATORS: IndicatorDef[] = [
         const lockedR = ((t.finalSl - t.entry) * t.dir) / riskNow;
         const live = t.reason === 'open';
         const pv = on('position')
-          ? positionView(t.dir, t.entry, t.initialSl, t.finalSl, lastClose, {
-              ...POSITION_DEFAULTS,
-              riskUsd,
-              leverage,
-            })
+          ? positionView(t.dir, t.entry, t.initialSl, t.finalSl, lastClose, posOpts)
           : null;
         // SL එක entry එක පනිලාද — ඒක තමයි වැදගත්ම දේ.
         const locked = lockedR > 0;
@@ -2674,12 +2712,16 @@ export const INDICATORS: IndicatorDef[] = [
             (pv ? `  →  ${formatUsd(pv.stopUsd)}` : `  (${lockedR >= 0 ? '+' : ''}${lockedR.toFixed(2)}R)`),
           valueColor: (pv ? pv.stopUsd : lockedR) >= 0 ? up : down,
         });
+        const closedUsd = live
+          ? null
+          : tradeUsd(t.dir, t.entry, t.initialSl, t.exitPrice, posOpts, feePct, slipPct);
         rows.push({
           label: live ? '  Profit now' : '  Result',
           value: pv
-            ? formatUsd(live ? pv.unrealizedUsd : t.r * riskUsd)
+            ? formatUsd(live ? pv.unrealizedUsd : (closedUsd?.netUsd ?? t.r * riskUsd)) +
+              (closedUsd?.liquidated ? '  LIQUIDATED' : '')
             : `${(live ? liveR : t.r) >= 0 ? '+' : ''}${(live ? liveR : t.r).toFixed(2)}R`,
-          valueColor: (live ? liveR : t.r) >= 0 ? up : down,
+          valueColor: (live ? liveR : (closedUsd?.netUsd ?? t.r)) >= 0 ? up : down,
         });
 
         if (!simple) {
@@ -2719,14 +2761,23 @@ export const INDICATORS: IndicatorDef[] = [
           labelColor: NEUTRAL,
         });
         rows.push({
-          label: '  Booked',
-          value: s.trades ? formatUsd(s.totalR * riskUsd) : '-',
-          valueColor: s.totalR > 0 ? up : down,
+          label: byMargin ? `  $${posOpts.marginUsd} x${leverage} each` : `  $${riskUsd} risk each`,
+          value: usdTrades ? formatUsd(netUsd) : '-',
+          valueColor: netUsd > 0 ? up : down,
         });
         rows.push({
           label: '  Won',
-          value: s.trades ? `${s.wins} of ${s.trades}  (${s.winRate.toFixed(0)}%)` : '-',
+          value: usdTrades
+            ? `${usdWins} of ${usdTrades}  (${((100 * usdWins) / usdTrades).toFixed(0)}%)`
+            : '-',
         });
+        if (byMargin) {
+          rows.push({
+            label: '  Liquidated',
+            value: `${liquidations}  (-$${(liquidations * posOpts.marginUsd).toFixed(0)})`,
+            valueColor: liquidations > 0 ? down : NEUTRAL,
+          });
+        }
         // Exit එක වුණේ මොකෙන්ද — සරල වචන වලින්.
         rows.push({
           label: '  Stopped at a loss',
@@ -2762,9 +2813,21 @@ export const INDICATORS: IndicatorDef[] = [
             valueColor: s.totalR > 0 ? up : down,
           },
           {
-            label: 'Booked PNL',
-            value: s.trades ? formatUsd(s.totalR * riskUsd) : '-',
-            valueColor: s.totalR > 0 ? up : down,
+            label: byMargin ? `Booked ($${posOpts.marginUsd} x${leverage})` : `Booked ($${riskUsd} risk)`,
+            value: usdTrades ? formatUsd(netUsd) : '-',
+            valueColor: netUsd > 0 ? up : down,
+          },
+          {
+            label: 'PF in dollars',
+            value: usdTrades ? (Number.isFinite(usdPf) ? usdPf.toFixed(2) : 'inf') : '-',
+            valueColor: usdPf >= 1 ? up : down,
+          },
+          {
+            label: 'Liquidations',
+            value: byMargin
+              ? `${liquidations} of ${usdTrades}  (-$${(liquidations * posOpts.marginUsd).toFixed(0)})`
+              : 'n/a (risk sizing)',
+            valueColor: liquidations > 0 ? down : NEUTRAL,
           },
           { label: 'Win rate', value: s.trades ? `${s.winRate.toFixed(1)}%` : '-' },
           {
