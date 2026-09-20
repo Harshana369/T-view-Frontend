@@ -65,11 +65,12 @@ export function PositionHistory({ positions }: { positions: PositionRecord[] }) 
   // සාරාංශය — Binance එකේ නැහැ, ඒත් "මම ලාභද පාඩුද" කියන ප්‍රශ්නයට
   // උත්තරේ එක තැනකින් පේන්න ඕන.
   const total = useMemo(() => {
+    const gross = closed.reduce((a, p) => a + p.grossUsd, 0);
     const pnl = closed.reduce((a, p) => a + p.realizedUsd, 0);
     const fees = closed.reduce((a, p) => a + p.feeUsd, 0);
     const wins = closed.filter((p) => p.realizedUsd > 0).length;
     const liq = closed.filter((p) => p.liquidated).length;
-    return { pnl, fees, wins, liq, n: closed.length };
+    return { gross, pnl, fees, wins, liq, n: closed.length };
   }, [closed]);
 
   const rows = tab === 'open' ? live : closed;
@@ -94,10 +95,17 @@ export function PositionHistory({ positions }: { positions: PositionRecord[] }) 
 
         {total.n > 0 && (
           <span className="poshist-sum">
+            {/* Gross − fees = realized. එකතුව වෙනුවට **අඩු කිරීම**
+                පේන්න ඕන — නැත්නම් fees වෙනම යන එකක් වගේ පේනවා. */}
+            <span className="dim">Gross</span>
+            <span style={{ color: total.gross >= 0 ? UP : DOWN }}>{formatUsd(total.gross)}</span>
+            <span className="dim">− Fees</span>
+            <span className="poshist-fee">${total.fees.toFixed(2)}</span>
+            <span className="dim">=</span>
             <span className="dim">Realized PNL</span>
             <strong style={{ color: total.pnl >= 0 ? UP : DOWN }}>{formatUsd(total.pnl)}</strong>
             <span className="dim">
-              {total.wins}/{total.n} won · fees ${total.fees.toFixed(2)}
+              {total.wins}/{total.n} won
               {total.liq > 0 ? ` · ${total.liq} liquidated` : ''}
             </span>
           </span>
@@ -132,9 +140,12 @@ export function PositionHistory({ positions }: { positions: PositionRecord[] }) 
                   <th className="num">Size</th>
                   <th className="num">Entry Price</th>
                   <th className="num">{tab === 'open' ? 'Mark Price' : 'Close Price'}</th>
-                  <th className="num">Realized PNL</th>
-                  <th className="num">ROE%</th>
+                  <th className="num">Gross PNL</th>
                   <th className="num">Fees</th>
+                  <th className="num" title="Fees අඩු කරපු එක">
+                    Realized PNL
+                  </th>
+                  <th className="num">ROE%</th>
                   <th>Exit</th>
                   <th>Opened</th>
                   <th>{tab === 'open' ? 'Held' : 'Closed'}</th>
@@ -161,7 +172,11 @@ export function PositionHistory({ positions }: { positions: PositionRecord[] }) 
                       </td>
                       <td className="num">{price(p.entryPrice)}</td>
                       <td className="num">{price(p.closePrice)}</td>
-                      <td className="num" style={{ color: win ? UP : DOWN }}>
+                      <td className="num" style={{ color: p.grossUsd >= 0 ? UP : DOWN }}>
+                        {formatUsd(p.grossUsd)}
+                      </td>
+                      <td className="num poshist-fee">-${p.feeUsd.toFixed(2)}</td>
+                      <td className="num poshist-net" style={{ color: win ? UP : DOWN }}>
                         {formatUsd(p.realizedUsd)}
                         {p.liquidated && <span className="poshist-liq"> LIQ</span>}
                       </td>
@@ -169,7 +184,6 @@ export function PositionHistory({ positions }: { positions: PositionRecord[] }) 
                         {p.roePct >= 0 ? '+' : ''}
                         {p.roePct.toFixed(1)}%
                       </td>
-                      <td className="num dim">${p.feeUsd.toFixed(2)}</td>
                       <td style={{ color: p.reason === 'stop' ? DOWN : DIM }}>
                         {REASON_LABEL[p.reason] ?? p.reason}
                       </td>

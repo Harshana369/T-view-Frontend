@@ -118,8 +118,14 @@ export interface PositionRecord {
   closedAt: number;
   /** තාම වැහිලා නෑ නම් `true` — Binance එකේ Positions tab එකේ එක. */
   open: boolean;
-  /** Fees + slippage අඩු කරපු අන්තිම ලාභය/පාඩුව. */
+  /**
+   * Fees **අඩු කරන්න කලින්** — මිල චලනයෙන් විතරක් එන ලාභය/පාඩුව.
+   * `realizedUsd = grossUsd − feeUsd` (liquidation එකෙන් කැපුවොත් හැර).
+   */
+  grossUsd: number;
+  /** Fees + slippage **අඩු කරපු** අන්තිම ලාභය/පාඩුව — ගිණුමට එන එක. */
   realizedUsd: number;
+  /** Fees + slippage, පැත්ත දෙකටම (ඇතුළු වීම + පිටවීම). */
   feeUsd: number;
   /** Margin එකට සාපේක්ෂව. */
   roePct: number;
@@ -2696,6 +2702,8 @@ export const INDICATORS: IndicatorDef[] = [
       // ඒත් `margin` mode එකේදී trade එකකට size එක වෙනස් නිසා එකින් එක
       // ගණන් හදන්නම ඕන (liquidation එකත් එක්කම).
       let netUsd = 0;
+      let grossUsd = 0;
+      let feesUsd = 0;
       let liquidations = 0;
       let usdWins = 0;
       let usdGross = 0;
@@ -2707,6 +2715,8 @@ export const INDICATORS: IndicatorDef[] = [
         if (!tu) continue;
         usdTrades++;
         netUsd += tu.netUsd;
+        grossUsd += tu.grossUsd;
+        feesUsd += tu.costUsd;
         if (tu.liquidated) liquidations++;
         if (tu.netUsd > 0) { usdWins++; usdGross += tu.netUsd; } else usdLoss += -tu.netUsd;
       }
@@ -2802,8 +2812,20 @@ export const INDICATORS: IndicatorDef[] = [
           value: `${s.trades} trades`,
           labelColor: NEUTRAL,
         });
+        // Gross − fees = booked. Fees කොපමණ කෑවාද කියන එක වෙන්ම පේන්න
+        // ඕන — ඒක තමයි මේ strategy එකේ ලොකුම සතුරා.
         rows.push({
-          label: byMargin ? `  $${posOpts.marginUsd} x${leverage} each` : `  $${riskUsd} risk each`,
+          label: '  Price move gave',
+          value: usdTrades ? formatUsd(grossUsd) : '-',
+          valueColor: grossUsd > 0 ? up : down,
+        });
+        rows.push({
+          label: '  Fees took',
+          value: usdTrades ? `-$${feesUsd.toFixed(2)}` : '-',
+          valueColor: TV.orange,
+        });
+        rows.push({
+          label: byMargin ? `  = ${posOpts.marginUsd}$ x${leverage} booked` : `  = booked ($${riskUsd} risk)`,
           value: usdTrades ? formatUsd(netUsd) : '-',
           valueColor: netUsd > 0 ? up : down,
         });
@@ -2855,7 +2877,19 @@ export const INDICATORS: IndicatorDef[] = [
             valueColor: s.totalR > 0 ? up : down,
           },
           {
-            label: byMargin ? `Booked ($${posOpts.marginUsd} x${leverage})` : `Booked ($${riskUsd} risk)`,
+            label: 'Gross (price move)',
+            value: usdTrades ? formatUsd(grossUsd) : '-',
+            valueColor: grossUsd > 0 ? up : down,
+          },
+          {
+            label: 'Fees + slippage',
+            value: usdTrades ? `-$${feesUsd.toFixed(2)}` : '-',
+            valueColor: TV.orange,
+          },
+          {
+            label: byMargin
+              ? `= Booked ($${posOpts.marginUsd} x${leverage})`
+              : `= Booked ($${riskUsd} risk)`,
             value: usdTrades ? formatUsd(netUsd) : '-',
             valueColor: netUsd > 0 ? up : down,
           },
@@ -2973,6 +3007,7 @@ export const INDICATORS: IndicatorDef[] = [
           marginUsd: tu.marginUsd,
           entryPrice: t.entry,
           closePrice: t.exitPrice,
+          grossUsd: tu.grossUsd,
           openedAt: at(t.index) as number,
           closedAt: at(t.exitIndex) as number,
           open: live,

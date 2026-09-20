@@ -1231,3 +1231,13 @@ body {
   margin-left: 4px;
   padding: 1px 3px;
 }
+
+/* Fees හැමවිටම අඩු වෙන දෙයක් — තැඹිලි පාටින්, ඍණ සලකුණත් එක්ක. */
+.poshist-fee {
+  color: #f0b90b;
+}
+
+/* Fees අඩු කරපු අන්තිම අගය — තද අකුරු, මේක තමයි ගිණුමට එන්නේ. */
+.poshist-net {
+  font-weight: 600;
+}
