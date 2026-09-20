@@ -1313,3 +1313,12 @@ body {
   font-weight: 600;
   position: sticky;
 }
+
+/* Coins ගොඩක් තෝරාගෙන තියෙනවා නම් — වෙලාව යනවා කියලා කලින්ම. */
+.poshist-warn {
+  background: rgba(240, 185, 11, 0.12);
+  border-radius: 3px;
+  color: #f0b90b;
+  font-size: 10px;
+  padding: 2px 6px;
+}

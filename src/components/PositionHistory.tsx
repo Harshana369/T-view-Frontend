@@ -1,8 +1,9 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { fetchPerpSymbols } from '../lib/binance';
 import type { PositionRecord } from '../lib/indicatorRegistry';
 import { runGroupPnl, type GroupPnl } from '../lib/groupPnl';
 import { formatSize, formatUsd } from '../lib/position';
-import { useStore } from '../store';
+import { ALL_GROUP_ID, useStore } from '../store';
 
 /**
  * Binance Futures එකේ **Positions / Position History** කොටස වගේ පහළ
@@ -66,15 +67,55 @@ export function PositionHistory({ positions }: { positions: PositionRecord[] }) 
   const watchGroups = useStore((st) => st.watchGroups);
   const indicators = useStore((st) => st.indicators);
   const [groupId, setGroupId] = useState('');
+  /**
+   * "All coins" — Binance එකේ දැනට trading තියෙන හැම perp එකක්ම.
+   * මේක store එකේ නෑ (Watchlist එකේත් live list එකෙන්මයි එන්නේ), ඒ
+   * නිසා මෙතනත් එකපාරක් ගෙන්නගන්නවා.
+   */
+  const [allCoins, setAllCoins] = useState<string[]>([]);
   const [bars, setBars] = useState(3000);
   const [group, setGroup] = useState<GroupPnl | null>(null);
   const [busy, setBusy] = useState<{ done: number; total: number } | null>(null);
   const [groupErr, setGroupErr] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
+  // Group tab එක බලනකොට විතරයි ගෙන්නන්නේ — නැතුව හැම විටම request එකක්.
+  useEffect(() => {
+    if (tab !== 'group' || allCoins.length > 0) return;
+    let stopped = false;
+    fetchPerpSymbols()
+      .then((list) => {
+        if (!stopped) setAllCoins(list.map((x) => x.symbol));
+      })
+      .catch(() => {
+        // List එක නැතුවත් අනිත් groups වැඩ කරනවා.
+      });
+    return () => {
+      stopped = true;
+    };
+  }, [tab, allCoins.length]);
+
   // Chart එකේ තියෙන backtest indicator එකේ settings — group එකටත් ඒවාම.
   const trailInstance = indicators.find((i) => i.defId === 'bbrsitrail');
-  const picked = watchGroups.find((g) => g.id === groupId) ?? watchGroups[0];
+
+  // Dropdown එකේ පේන ලැයිස්තුව — "All coins" උඩම, ඊට පස්සේ user groups.
+  const options = useMemo(
+    () => [
+      { id: ALL_GROUP_ID, name: 'All coins', symbols: allCoins },
+      ...watchGroups.map((g) => ({ id: g.id, name: g.name, symbols: g.symbols })),
+    ],
+    [allCoins, watchGroups],
+  );
+  // Default එක **All coins** නෙවෙයි — ඒක coins 500ක් විතර, සහ list
+  // එක එනකම් හිස්. ඒ නිසා user group එකක් default, All coins තෝරගන්න
+  // පුළුවන් විදිහට list එකේ උඩම.
+  const picked =
+    options.find((g) => g.id === groupId) ??
+    options.find((g) => g.id !== ALL_GROUP_ID) ??
+    options[0];
+
+  // Coins 500ක් වගේ දුවනකොට කොච්චර වෙලාද කියලා කලින්ම කියනවා.
+  const heavy = (picked?.symbols.length ?? 0) > 60;
 
   async function runGroup() {
     if (!picked || !trailInstance) return;
@@ -195,7 +236,7 @@ export function PositionHistory({ positions }: { positions: PositionRecord[] }) 
         <div className="poshist-body">
           <div className="poshist-controls">
             <select value={picked?.id ?? ''} onChange={(e) => setGroupId(e.target.value)}>
-              {watchGroups.map((g) => (
+              {options.map((g) => (
                 <option key={g.id} value={g.id}>
                   {g.name} ({g.symbols.length})
                 </option>
@@ -221,6 +262,11 @@ export function PositionHistory({ positions }: { positions: PositionRecord[] }) 
             >
               {busy ? `Running ${busy.done}/${busy.total}...` : 'Run backtest'}
             </button>
+            {heavy && !busy && (
+              <span className="poshist-warn" title="Coins gaana wediyi">
+                {picked.symbols.length} coins
+              </span>
+            )}
             {busy && (
               <button
                 type="button"
@@ -245,8 +291,11 @@ export function PositionHistory({ positions }: { positions: PositionRecord[] }) 
           ) : !group ? (
             <p className="poshist-empty">
               {picked && picked.symbols.length > 0
-                ? `"${picked.name}" group eke coins ${picked.symbols.length} ta backtest eka duwawanna "Run backtest" ebenna.`
-                : 'Me group eke coins naha.'}
+                ? `"${picked.name}" group eke coins ${picked.symbols.length} ta backtest eka duwawanna "Run backtest" ebenna.` +
+                  (heavy ? ` (Coins ${picked.symbols.length}k nisa minuththu kihipayak yanna puluwan.)` : '')
+                : picked?.id === ALL_GROUP_ID
+                  ? 'Binance coin list eka gennanawa...'
+                  : 'Me group eke coins naha.'}
             </p>
           ) : (
             <table className="poshist-table">
