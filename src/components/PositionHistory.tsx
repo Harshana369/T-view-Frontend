@@ -102,6 +102,7 @@ export function PositionHistory({ positions }: { positions: PositionRecord[] }) 
   const BACKTEST_DEFS: { id: string; label: string }[] = [
     { id: 'bbrsitrail', label: 'Bollinger + RSI' },
     { id: 'snipertrail', label: 'Sniper V.02' },
+    { id: 'macdsmatrail2', label: 'MACD + SMA 200' },
   ];
   const available = BACKTEST_DEFS.filter((d) => indicators.some((i) => i.defId === d.id));
   const [defId, setDefId] = useState('');

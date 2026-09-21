@@ -3,6 +3,11 @@ import type { BandPoint } from './bandFill';
 import { computeBbRsi } from './bbRsi';
 import { computeBbRsiTrail, BB_TRAIL_DEFAULTS, type BbTrailResult } from './bbRsiTrail';
 import { computeSniperTrail, SNIPER_TRAIL_DEFAULTS } from './sniperTrail';
+import {
+  computeMacdSmaTrail2,
+  MACD_TRAIL2_DEFAULTS,
+  MACD_SIGNAL_DEFAULTS,
+} from './macdSmaTrail2';
 import { positionView, tradeUsd, POSITION_DEFAULTS, formatSize, formatUsd } from './position';
 import { computeBreakoutTargets } from './breakoutTargets';
 import { computeElliottWave } from './elliottWave';
@@ -2693,6 +2698,123 @@ export const INDICATORS: IndicatorDef[] = [
           key: 'emaFast', label: `EMA ${signalOpts.fast}`, type: 'line',
           color: withAlpha('#26a69a', 70), data: toPoints(candles, sn.emaFast),
           lineWidth: 1, lastValueVisible: false,
+        });
+      }
+
+      return {
+        series,
+        segments: view.segments,
+        markers: view.markers,
+        positions: view.positions,
+        panel: { position: 'Top Right', rows: view.rows },
+      };
+    },
+  },
+  {
+    id: 'macdsmatrail2',
+    name: 'MACD + SMA 200 - Break-even & Trail Backtest',
+    pane: 'main',
+    params: [
+      {
+        key: 'direction',
+        label: 'Direction',
+        kind: 'select',
+        default: 'both',
+        options: ['both', 'long', 'short'],
+      },
+      { key: 'fastLength', label: 'MACD Fast Length', default: 12, min: 1, max: 200 },
+      { key: 'slowLength', label: 'MACD Slow Length', default: 26, min: 1, max: 400 },
+      { key: 'signalLength', label: 'MACD Signal Length', default: 9, min: 1, max: 100 },
+      { key: 'veryslowLength', label: 'SMA Length', default: 200, min: 1, max: 1000 },
+      // ChartArt strategy එකේ `cancel` බ්ලොක් එක — SMA දෙක විරුද්ධ
+      // පැත්තට තියෙනකොට order එක අවලංගු වෙනවා. Off කළොත් signals වැඩියි.
+      { key: 'respectCancel', label: 'Respect cancel rule', kind: 'switch', default: 'On' },
+      { key: 'initialSl', label: 'Initial SL xATR', default: 2, min: 0.2, max: 10, step: 0.1 },
+      { key: 'beAt', label: 'Break-even at xR (0 = off)', default: 0, min: 0, max: 5, step: 0.1 },
+      { key: 'beBuffer', label: 'Break-even buffer xR', default: 0.1, min: 0, max: 1, step: 0.05 },
+      { key: 'trailAfter', label: 'Start trailing at xR', default: 0.5, min: 0, max: 10, step: 0.1 },
+      {
+        key: 'trailMode',
+        label: 'Trail method',
+        kind: 'select',
+        default: 'ratio',
+        options: ['ratio', 'atr'],
+      },
+      { key: 'trailRatio', label: 'Lock ratio (0.7 = keep 70%)', default: 0.7, min: 0, max: 0.95, step: 0.05 },
+      { key: 'minLock', label: 'Min locked profit xR', default: 0.5, min: 0, max: 5, step: 0.1 },
+      { key: 'trailAtr', label: 'Trail xATR (atr mode)', default: 2, min: 0, max: 15, step: 0.5 },
+      { key: 'takeProfit', label: 'Take Profit xR (0 = off)', default: 0, min: 0, max: 20, step: 0.5 },
+      { key: 'exitOpp', label: 'Exit on opposite signal', kind: 'switch', default: 'On' },
+      { key: 'atrLength', label: 'ATR Length', default: 14, min: 1, max: 200 },
+      { key: 'fee', label: 'Fee % (per side)', default: 0.045, min: 0, max: 0.2, step: 0.001 },
+      { key: 'slip', label: 'Slippage % (per side)', default: 0.02, min: 0, max: 0.5, step: 0.005 },
+      { key: 'maxRisk', label: 'Max Risk %', default: 10, min: 0.5, max: 50, step: 0.5 },
+      { key: 'showMa', label: 'Show SMA 200', kind: 'switch', default: 'On' },
+      { key: 'compare', label: 'Compare exit methods', kind: 'switch', default: 'Off' },
+      {
+        key: 'detail',
+        label: 'Panel detail',
+        kind: 'select',
+        default: 'simple',
+        options: ['simple', 'full'],
+      },
+      { key: 'position', label: 'Position Panel', kind: 'switch', default: 'On' },
+      {
+        key: 'sizing',
+        label: 'Sizing',
+        kind: 'select',
+        default: 'risk',
+        options: ['risk', 'margin'],
+      },
+      { key: 'riskUsd', label: 'Risk per trade ($)', default: 6, min: 1, max: 100000 },
+      { key: 'marginUsd', label: 'Margin per trade ($)', default: 10, min: 1, max: 100000 },
+      { key: 'leverage', label: 'Leverage (x)', default: 10, min: 1, max: 125 },
+    ],
+    compute: (candles, p, ctx) => {
+      const on = (key: string, fallback = 'On') => str(p, key, fallback) === 'On';
+      const signalOpts = {
+        ...MACD_SIGNAL_DEFAULTS,
+        fastLength: num(p, 'fastLength', 12),
+        slowLength: num(p, 'slowLength', 26),
+        signalLength: num(p, 'signalLength', 9),
+        veryslowLength: num(p, 'veryslowLength', 200),
+      };
+
+      const r = computeMacdSmaTrail2(candles, {
+        ...MACD_TRAIL2_DEFAULTS,
+        signal: signalOpts,
+        respectCancel: on('respectCancel'),
+        direction: str(p, 'direction', 'both') as 'both' | 'long' | 'short',
+        atrLength: num(p, 'atrLength', 14),
+        initialSlAtr: num(p, 'initialSl', 2),
+        breakEvenAtR: num(p, 'beAt', 0),
+        breakEvenBufferR: num(p, 'beBuffer', 0.1),
+        trailAfterR: num(p, 'trailAfter', 0.5),
+        trailMode: str(p, 'trailMode', 'ratio') as 'ratio' | 'atr',
+        trailRatio: num(p, 'trailRatio', 0.7),
+        minLockR: num(p, 'minLock', 0.5),
+        trailAtr: num(p, 'trailAtr', 2),
+        takeProfitR: num(p, 'takeProfit', 0),
+        exitOnOpposite: on('exitOpp'),
+        feePct: num(p, 'fee', 0.045),
+        slippagePct: num(p, 'slip', 0.02),
+        maxRiskPct: num(p, 'maxRisk', 10),
+      });
+
+      const view = buildTrailView(candles, r, p, ctx);
+      const series = view.series;
+
+      if (on('showMa')) {
+        const ms = computeMacdSma(candles, signalOpts);
+        // SMA 200 — trend පෙරහන. SL path එක උඩින් පේන්න ඕන නිසා යටට.
+        series.unshift({
+          key: 'sma200',
+          label: `SMA ${signalOpts.veryslowLength}`,
+          type: 'line',
+          color: withAlpha('#2962ff', 75),
+          data: toPoints(candles, ms.veryslowMA),
+          lineWidth: 2,
+          lastValueVisible: false,
         });
       }
 
