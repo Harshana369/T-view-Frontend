@@ -26,6 +26,13 @@ export default defineConfig({
         target: 'http://127.0.0.1:3002',
         changeOrigin: true,
       },
+      // Live data — server එකේ WebSocket එක. `ws: true` නැතුව vite
+      // upgrade request එක forward කරන්නේ නෑ.
+      '/ws': {
+        target: 'ws://127.0.0.1:3002',
+        ws: true,
+        changeOrigin: true,
+      },
     },
   },
 });

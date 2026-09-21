@@ -1,4 +1,5 @@
 import type { UTCTimestamp } from 'lightweight-charts';
+import { liveStream } from './stream';
 import type { Candle, CandleSet, PerpSymbol, Timeframe } from './types';
 
 /**
@@ -218,9 +219,18 @@ async function fetchCandlesFromDb(
 }
 
 /**
- * Live update එකට කරන්නේ අන්තිම candles කීපය නැවත නැවත poll කිරීමයි.
- * හැම poll එකකදීම අලුත්/වෙනස් වුණු candles ටික `onCandles` එකට යවනවා.
- * Return වෙන function එක call කළාම polling නවතිනවා.
+ * Live updates — **polling නෙවෙයි**, server එකේ `/ws` එකෙන්.
+ *
+ * කලින් මෙතන `setInterval` එකක් තිබුණා, chart එකකට klines request
+ * එකක් තත්පර 3–20කට වරක්. Tab කීයක් තිබ්බත් ඒ හැම එකක්ම වෙන වෙනම
+ * Binance එකට ගියා.
+ *
+ * දැන් ඉල්ලීම යන්නේ අපේ server එකට. එතන symbol/interval එකකට
+ * **එක** subscription එකයි, tabs කීයක් බැලුවත්. (Server එක Binance
+ * WS එකෙන් ගන්නවා; ඒක බැරි ජාලයක නම් server පැත්තේ එක poller
+ * එකකින් — browser එකට වෙනස දැනෙන්නේ නෑ.)
+ *
+ * Return වෙන function එක call කළාම නවතිනවා.
  */
 export function subscribeCandles(
   symbol: string,
@@ -228,25 +238,8 @@ export function subscribeCandles(
   onCandles: (candles: Candle[]) => void,
   onError?: (message: string) => void,
 ): () => void {
-  // කෙටි timeframe වලට ඉක්මනට, දිග ඒවාට හෙමින් — 3s සිට 20s දක්වා.
-  const periodMs = Math.min(20_000, Math.max(3_000, tf.seconds * 200));
-  let stopped = false;
-
-  const tick = async () => {
-    try {
-      // අන්තිම candles 3ක් ඇති — දැන් හැදෙන එකයි, කලින් වහපු ඒවායි.
-      const recent = await fetchKlines(symbol, tf, undefined, 3);
-      if (!stopped && recent.length > 0) onCandles(recent.map(toCandle));
-    } catch (err) {
-      if (!stopped) onError?.(err instanceof Error ? err.message : String(err));
-    }
-  };
-
-  const timer = setInterval(tick, periodMs);
-  void tick();
-
-  return () => {
-    stopped = true;
-    clearInterval(timer);
-  };
+  void onError;
+  return liveStream.onKline(symbol, tf.code, (candle) => {
+    onCandles([candle]);
+  });
 }

@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { fetchPerpSymbols } from '../lib/binance';
+import { liveStream } from '../lib/stream';
 import { formatChange, formatPrice } from '../lib/format';
 import type { PerpSymbol } from '../lib/types';
 import { ALL_GROUP_ID, useStore } from '../store';
 
-/** Live price + 24h change refresh කරන පරතරය. */
-const PRICE_POLL_MS = 5_000;
 /** Price එකක් වෙනස් වුණාම highlight වෙලා තියෙන කාලය. */
 const FLASH_MS = 900;
 
@@ -110,24 +109,49 @@ export function Watchlist() {
   const activeGroup = watchGroups.find((g) => g.id === activeGroupId);
   const isAll = activeGroupId === ALL_GROUP_ID || !activeGroup;
 
-  // සියලුම prices poll කරනවා — එක ticker request එකකින් හැම පේළියකටම ඇති.
+  // Prices — **polling නෑ**. Server එකේ `/ws` එකෙන් push වෙනවා.
+  //
+  // කලින් මෙතන තත්පර 5කට වරක් `ticker/24hr` (weight 40) + exchangeInfo
+  // ගියා. Tab එකකට විනාඩියකට weight 492ක් — 2400න් 20%ක්, tab එකකට.
+  // දැන් Binance එකට යන බර tabs ගාණින් ස්වාධීනයි.
+  //
+  // Coin list එක (base/quote, තියෙන symbols) stream එකේ නෑ — ඒක
+  // exchangeInfo එකේ. ඒක කලාතුරකින් වෙනස් වෙන එකක් (weight 1), ඒ නිසා
+  // **එකපාරක්** ගෙන්නලා, මිල ටික ඒ උඩට stream එකෙන් දානවා.
   useEffect(() => {
     let stopped = false;
-    const tick = async () => {
-      try {
-        const list = await fetchPerpSymbols();
+    const meta = new Map<string, PerpSymbol>();
+
+    fetchPerpSymbols()
+      .then((list) => {
         if (stopped) return;
+        for (const p of list) meta.set(p.symbol, p);
         setAll(list);
-        setError(null);
-      } catch (err) {
+      })
+      .catch((err) => {
         if (!stopped) setError(err instanceof Error ? err.message : String(err));
+      });
+
+    const off = liveStream.onTickers((updates) => {
+      if (stopped) return;
+      for (const u of updates) {
+        const row = meta.get(u.symbol);
+        if (!row) continue;
+        meta.set(u.symbol, {
+          ...row,
+          price: u.price,
+          priceDecimals: u.priceDecimals || row.priceDecimals,
+          changePct: u.changePct,
+          notional24h: u.notional24h || row.notional24h,
+        });
       }
-    };
-    const timer = setInterval(tick, PRICE_POLL_MS);
-    void tick();
+      // Volume අනුව පිළිවෙළ තියාගන්නවා — fetchPerpSymbols එකේ වගේම.
+      setAll([...meta.values()].sort((a, b) => b.notional24h - a.notional24h));
+    });
+
     return () => {
       stopped = true;
-      clearInterval(timer);
+      off();
     };
   }, []);
 
