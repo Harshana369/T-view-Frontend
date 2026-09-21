@@ -2520,11 +2520,11 @@ export const INDICATORS: IndicatorDef[] = [
         key: 'sizing',
         label: 'Sizing',
         kind: 'select',
-        default: 'risk',
+        default: 'margin',
         options: ['risk', 'margin'],
       },
       { key: 'riskUsd', label: 'Risk per trade ($)', default: 6, min: 1, max: 100000 },
-      { key: 'marginUsd', label: 'Margin per trade ($)', default: 10, min: 1, max: 100000 },
+      { key: 'marginUsd', label: 'Margin per trade ($)', default: 6, min: 1, max: 100000 },
       { key: 'leverage', label: 'Leverage (x)', default: 10, min: 1, max: 125 },
     ],
     compute: (candles, p, ctx) => {
@@ -2636,11 +2636,11 @@ export const INDICATORS: IndicatorDef[] = [
         key: 'sizing',
         label: 'Sizing',
         kind: 'select',
-        default: 'risk',
+        default: 'margin',
         options: ['risk', 'margin'],
       },
       { key: 'riskUsd', label: 'Risk per trade ($)', default: 6, min: 1, max: 100000 },
-      { key: 'marginUsd', label: 'Margin per trade ($)', default: 10, min: 1, max: 100000 },
+      { key: 'marginUsd', label: 'Margin per trade ($)', default: 6, min: 1, max: 100000 },
       { key: 'leverage', label: 'Leverage (x)', default: 10, min: 1, max: 125 },
     ],
     compute: (candles, p, ctx) => {
@@ -2763,11 +2763,11 @@ export const INDICATORS: IndicatorDef[] = [
         key: 'sizing',
         label: 'Sizing',
         kind: 'select',
-        default: 'risk',
+        default: 'margin',
         options: ['risk', 'margin'],
       },
       { key: 'riskUsd', label: 'Risk per trade ($)', default: 6, min: 1, max: 100000 },
-      { key: 'marginUsd', label: 'Margin per trade ($)', default: 10, min: 1, max: 100000 },
+      { key: 'marginUsd', label: 'Margin per trade ($)', default: 6, min: 1, max: 100000 },
       { key: 'leverage', label: 'Leverage (x)', default: 10, min: 1, max: 125 },
     ],
     compute: (candles, p, ctx) => {
@@ -2992,7 +2992,7 @@ function buildTrailView(
         ...POSITION_DEFAULTS,
         sizing: str(p, 'sizing', 'risk') as 'risk' | 'margin',
         riskUsd,
-        marginUsd: num(p, 'marginUsd', 10),
+        marginUsd: num(p, 'marginUsd', 6),
         leverage,
       };
       const feePct = num(p, 'fee', 0.045);
@@ -3126,7 +3126,9 @@ function buildTrailView(
           valueColor: TV.orange,
         });
         rows.push({
-          label: byMargin ? `  = ${posOpts.marginUsd}$ x${leverage} booked` : `  = booked ($${riskUsd} risk)`,
+          label: byMargin
+            ? `  = booked ($${posOpts.marginUsd} x${leverage} each)`
+            : `  = booked ($${riskUsd} risk each)`,
           value: usdTrades ? formatUsd(netUsd) : '-',
           valueColor: netUsd > 0 ? up : down,
         });

@@ -41,9 +41,11 @@ export interface PositionOptions {
 }
 
 export const POSITION_DEFAULTS: PositionOptions = {
-  sizing: 'risk',
+  // හැම trade එකකටම එකම size එක — $6 දාලා 10x, ඒ කියන්නේ notional $60.
+  // (`risk` mode එකේදී size එක SL එකේ දුර අනුව වෙනස් වෙනවා; මෙතන නෑ.)
+  sizing: 'margin',
   riskUsd: 6,
-  marginUsd: 10,
+  marginUsd: 6,
   leverage: 10,
   maintenanceMarginRate: 0.004,
 };
