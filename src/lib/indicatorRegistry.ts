@@ -2850,6 +2850,19 @@ export const INDICATORS: IndicatorDef[] = [
       { key: 'adxLength', label: 'ADX Length', default: 14, min: 2, max: 100 },
       // AlgoAlpha එකේ SL එක 5×ATR — අනිත් backtest වල 2×.
       { key: 'initialSl', label: 'Initial SL xATR', default: 5, min: 0.2, max: 20, step: 0.1 },
+      // `room`  — ලාභය +0.5R වුණාම SL එක entry + 0.1R ට (පාඩුවක් නෑ),
+      //           ඊට පස්සේ උපරිම මිලෙන් 3×ATR පිටිපස්සෙන් trail.
+      //           සාමාන්‍ය pullback වලින් බේරිලා ලොකු චලන අල්ලනවා.
+      // `lock`  — trail පටන් ගත්ත ගමන් +0.5R අගුළු, ඊට පස්සේ 70%.
+      //           පොඩි ලාභ ඉක්මනට book වෙනවා, ඒත් pullback එකකින් කැපෙනවා.
+      // `custom`— යටින් තියෙන settings ඔක්කොම අතින්.
+      {
+        key: 'slStyle',
+        label: 'SL after profit',
+        kind: 'select',
+        default: 'room',
+        options: ['room', 'lock', 'custom'],
+      },
       { key: 'beAt', label: 'Break-even at xR (0 = off)', default: 0, min: 0, max: 5, step: 0.1 },
       { key: 'beBuffer', label: 'Break-even buffer xR', default: 0.1, min: 0, max: 1, step: 0.05 },
       { key: 'trailAfter', label: 'Start trailing at xR', default: 0.5, min: 0, max: 10, step: 0.1 },
@@ -2899,6 +2912,28 @@ export const INDICATORS: IndicatorDef[] = [
         preventOverlap: on('overlap'),
       };
 
+      // SL style එක — preset දෙකක් + custom.
+      const style = str(p, 'slStyle', 'room');
+      const exitOpts =
+        style === 'room'
+          ? {
+              breakEvenAtR: 0.5,
+              breakEvenBufferR: 0.1,
+              trailMode: 'atr' as const,
+              trailAtr: 3,
+              trailAfterR: 1,
+              minLockR: 0,
+            }
+          : style === 'lock'
+            ? {
+                breakEvenAtR: 0,
+                trailMode: 'ratio' as const,
+                trailRatio: 0.7,
+                trailAfterR: 0.5,
+                minLockR: 0.5,
+              }
+            : {};
+
       const r = computeBreakoutTrail(candles, {
         ...BREAKOUT_TRAIL_DEFAULTS,
         signal: signalOpts,
@@ -2919,6 +2954,8 @@ export const INDICATORS: IndicatorDef[] = [
         feePct: num(p, 'fee', 0.045),
         slippagePct: num(p, 'slip', 0.02),
         maxRiskPct: num(p, 'maxRisk', 10),
+        // Preset එකක් තෝරලා නම් ඒකේ අගයන් අතින් දාපු ඒවාට උඩින්.
+        ...exitOpts,
       });
 
       const view = buildTrailView(candles, r, p, ctx);
