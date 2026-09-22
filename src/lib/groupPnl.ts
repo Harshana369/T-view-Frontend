@@ -104,8 +104,15 @@ export async function runGroupPnl(
 
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, symbols.length) }, worker));
 
+  return summarise(rows);
+}
+
+/** පේළි වලින් එකතුව — fail වුණු ඒවා (`error`) ගණන් ගන්නේ නෑ. */
+export function summarise(input: SymbolPnl[]): GroupPnl {
+  const rows = [...input];
   const totals = emptyTotals();
   for (const r of rows) {
+    if (r.error) continue;
     totals.trades += r.trades;
     totals.wins += r.wins;
     totals.grossUsd += r.grossUsd;
@@ -114,7 +121,22 @@ export async function runGroupPnl(
     totals.openTrades += r.openTrades;
     totals.liquidated += r.liquidated;
   }
-  // ලොකුම ලාභය උඩම.
-  rows.sort((a, b) => b.realizedUsd - a.realizedUsd);
-  return { rows, totals, failed };
+  // ලොකුම ලාභය උඩම, fail වුණු ඒවා අන්තිමට.
+  rows.sort((a, b) =>
+    a.error && !b.error ? 1 : !a.error && b.error ? -1 : b.realizedUsd - a.realizedUsd);
+  return { rows, totals, failed: rows.filter((r) => r.error).map((r) => r.symbol) };
+}
+
+/**
+ * Fail වුණු coins ආපහු දුවවපු ප්‍රතිඵලය කලින් එකට එකතු කරනවා — සාර්ථක
+ * වුණු ඒවා error පේළිය වෙනුවට යනවා.
+ */
+export function mergeRetry(prev: GroupPnl, retry: GroupPnl): GroupPnl {
+  const bySymbol = new Map(prev.rows.map((r) => [r.symbol, r]));
+  for (const r of retry.rows) {
+    const old = bySymbol.get(r.symbol);
+    // ආපහු fail වුණොත් අලුත් error එක; සාර්ථක නම් අලුත් පේළිය.
+    if (!old || old.error) bySymbol.set(r.symbol, r);
+  }
+  return summarise([...bySymbol.values()]);
 }

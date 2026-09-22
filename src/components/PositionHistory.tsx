@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { fetchPerpSymbols } from '../lib/binance';
 import type { PositionRecord } from '../lib/indicatorRegistry';
-import { runGroupPnl, type GroupPnl } from '../lib/groupPnl';
+import { mergeRetry, runGroupPnl, type GroupPnl } from '../lib/groupPnl';
 import { formatSize, formatUsd } from '../lib/position';
 import { ALL_GROUP_ID, useStore } from '../store';
 
@@ -77,6 +77,21 @@ export function PositionHistory({ positions }: { positions: PositionRecord[] }) 
   const [group, setGroup] = useState<GroupPnl | null>(null);
   const [busy, setBusy] = useState<{ done: number; total: number } | null>(null);
   const [groupErr, setGroupErr] = useState<string | null>(null);
+  /**
+   * හැම group එකකම අන්තිම ප්‍රතිඵලය — "All groups" එකතුවට.
+   *
+   * Key එක `indicator|interval|candles` — settings වෙනස් run දෙකක්
+   * එකට එකතු වෙන්නේ නෑ (ඒක වැරදි එකතුවක් වෙනවා). Browser එකේ
+   * තියාගන්නවා, page එක refresh කළත් නැති වෙන්නේ නෑ.
+   */
+  const [saved, setSaved] = useState<Record<string, Record<string, SavedRun>>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem(SAVED_KEY) ?? '{}');
+    } catch {
+      return {};
+    }
+  });
+  const [view, setView] = useState<'coins' | 'groups'>('coins');
   const abortRef = useRef<AbortController | null>(null);
 
   // Group tab එක බලනකොට විතරයි ගෙන්නන්නේ — නැතුව හැම විටම request එකක්.
@@ -131,6 +146,50 @@ export function PositionHistory({ positions }: { positions: PositionRecord[] }) 
   // Coins 500ක් වගේ දුවනකොට කොච්චර වෙලාද කියලා කලින්ම කියනවා.
   const heavy = (picked?.symbols.length ?? 0) > 60;
 
+  const runKey = `${activeDefId}|${interval}|${bars}`;
+  const savedHere = saved[runKey] ?? {};
+
+  function remember(groupId: string, name: string, r: GroupPnl) {
+    setSaved((prev) => {
+      const next = {
+        ...prev,
+        [runKey]: { ...(prev[runKey] ?? {}), [groupId]: { name, result: r, at: Date.now() } },
+      };
+      try {
+        localStorage.setItem(SAVED_KEY, JSON.stringify(next));
+      } catch {
+        // Storage පිරිලා / private window — එකතුව session එකට විතරයි.
+      }
+      return next;
+    });
+  }
+
+  /** Fail වුණු coins විතරක් ආපහු — 429 එකක් ඉවර වුණාට පස්සේ. */
+  async function retryFailed() {
+    if (!group || !picked || !trailInstance || group.failed.length === 0) return;
+    const ac = new AbortController();
+    abortRef.current = ac;
+    setBusy({ done: 0, total: group.failed.length });
+    try {
+      const r = await runGroupPnl(
+        activeDefId,
+        group.failed,
+        interval,
+        trailInstance.params,
+        bars,
+        (done, total) => setBusy({ done, total }),
+        ac.signal,
+      );
+      if (!ac.signal.aborted) {
+        const merged = mergeRetry(group, r);
+        setGroup(merged);
+        remember(picked.id, picked.name, merged);
+      }
+    } finally {
+      if (!ac.signal.aborted) setBusy(null);
+    }
+  }
+
   async function runGroup() {
     if (!picked || !trailInstance) return;
     abortRef.current?.abort();
@@ -149,7 +208,11 @@ export function PositionHistory({ positions }: { positions: PositionRecord[] }) 
         (done, total) => setBusy({ done, total }),
         ac.signal,
       );
-      if (!ac.signal.aborted) setGroup(r);
+      if (!ac.signal.aborted) {
+        setGroup(r);
+        remember(picked.id, picked.name, r);
+        setView('coins');
+      }
     } catch (err) {
       setGroupErr(err instanceof Error ? err.message : 'asarthakayi');
     } finally {
@@ -291,6 +354,26 @@ export function PositionHistory({ positions }: { positions: PositionRecord[] }) 
                 {picked.symbols.length} coins
               </span>
             )}
+            {group && group.failed.length > 0 && !busy && (
+              <button
+                type="button"
+                className="poshist-stop"
+                title="Fail වුණු coins විතරක් ආපහු — විනාඩියක් විතර ඉඳලා එබෙන්න"
+                onClick={() => void retryFailed()}
+              >
+                Retry failed ({group.failed.length})
+              </button>
+            )}
+            {Object.keys(savedHere).length > 0 && (
+              <button
+                type="button"
+                className={`poshist-tab${view === 'groups' ? ' active' : ''}`}
+                onClick={() => setView((v) => (v === 'groups' ? 'coins' : 'groups'))}
+                title="Run කරපු groups ඔක්කොගේම එකතුව"
+              >
+                &Sigma; All groups ({Object.keys(savedHere).length})
+              </button>
+            )}
             {busy && (
               <button
                 type="button"
@@ -310,6 +393,23 @@ export function PositionHistory({ positions }: { positions: PositionRecord[] }) 
               Chart ekata "Bollinger + RSI - Break-even &amp; Trail Backtest" indicator eka
               mulinma ekathu karanna &mdash; group ekata duwannet ekeh settings ekkamayi.
             </p>
+          ) : view === 'groups' ? (
+            <AllGroupsTable
+              runs={savedHere}
+              onClear={() => {
+                setSaved((prev) => {
+                  const next = { ...prev };
+                  delete next[runKey];
+                  try {
+                    localStorage.setItem(SAVED_KEY, JSON.stringify(next));
+                  } catch {
+                    /* ignore */
+                  }
+                  return next;
+                });
+                setView('coins');
+              }}
+            />
           ) : groupErr ? (
             <p className="poshist-empty">{groupErr}</p>
           ) : !group ? (
@@ -470,5 +570,116 @@ export function PositionHistory({ positions }: { positions: PositionRecord[] }) 
         </div>
       )}
     </section>
+  );
+}
+
+const SAVED_KEY = 'groupPnl.saved.v1';
+
+interface SavedRun {
+  name: string;
+  result: GroupPnl;
+  at: number;
+}
+
+/**
+ * Groups ඔක්කොගේම එකතුව.
+ *
+ * Coins 528ම එකවර දුවවනකොට Binance 429 එනවා, ඒ නිසා groups 6කට
+ * බෙදලා එකින් එක දුවවනවා — මේ table එක ඒ ඔක්කොම එකට එකතු කරනවා.
+ * Fail වුණු coins එකතුවට ගණන් ගන්නේ නෑ, ඒත් ඒ ගාණ පේනවා — ඒ නිසා
+ * එකතුව සම්පූර්ණද කියලා දැනගන්න පුළුවන්.
+ */
+function AllGroupsTable({
+  runs,
+  onClear,
+}: {
+  runs: Record<string, SavedRun>;
+  onClear: () => void;
+}) {
+  // Group 1, Group 2 ... නමින් පිළිවෙළට.
+  const list = Object.values(runs).sort((a, b) =>
+    a.name.localeCompare(b.name, undefined, { numeric: true }),
+  );
+  const T = list.reduce(
+    (a, g) => {
+      const t = g.result.totals;
+      a.coins += g.result.rows.length - g.result.failed.length;
+      a.failed += g.result.failed.length;
+      a.trades += t.trades;
+      a.wins += t.wins;
+      a.gross += t.grossUsd;
+      a.fees += t.feeUsd;
+      a.pnl += t.realizedUsd;
+      a.liq += t.liquidated;
+      return a;
+    },
+    { coins: 0, failed: 0, trades: 0, wins: 0, gross: 0, fees: 0, pnl: 0, liq: 0 },
+  );
+  const winPct = (w: number, n: number) => (n ? `${((100 * w) / n).toFixed(0)}%` : '-');
+
+  return (
+    <table className="poshist-table">
+      <thead>
+        <tr>
+          <th>Group</th>
+          <th className="num">Coins</th>
+          <th className="num">Failed</th>
+          <th className="num">Trades</th>
+          <th className="num">Win rate</th>
+          <th className="num">Gross PNL</th>
+          <th className="num">Fees</th>
+          <th className="num">Realized PNL</th>
+          <th className="num">Liq.</th>
+        </tr>
+      </thead>
+      <tbody>
+        {list.map((g) => {
+          const t = g.result.totals;
+          return (
+            <tr key={g.name}>
+              <td className="poshist-sym">{g.name}</td>
+              <td className="num">{g.result.rows.length - g.result.failed.length}</td>
+              <td className="num" style={{ color: g.result.failed.length ? DOWN : DIM }}>
+                {g.result.failed.length || ''}
+              </td>
+              <td className="num">{t.trades}</td>
+              <td className="num">{winPct(t.wins, t.trades)}</td>
+              <td className="num" style={{ color: t.grossUsd >= 0 ? UP : DOWN }}>
+                {formatUsd(t.grossUsd)}
+              </td>
+              <td className="num poshist-fee">-${t.feeUsd.toFixed(2)}</td>
+              <td className="num poshist-net" style={{ color: t.realizedUsd >= 0 ? UP : DOWN }}>
+                {formatUsd(t.realizedUsd)}
+              </td>
+              <td className="num dim">{t.liquidated || ''}</td>
+            </tr>
+          );
+        })}
+      </tbody>
+      <tfoot>
+        <tr className="poshist-total">
+          <td>
+            ALL GROUPS{' '}
+            <button type="button" className="poshist-clear" onClick={onClear}>
+              clear
+            </button>
+          </td>
+          <td className="num">{T.coins}</td>
+          <td className="num" style={{ color: T.failed ? DOWN : DIM }}>
+            {T.failed || ''}
+          </td>
+          <td className="num">{T.trades}</td>
+          <td className="num">{winPct(T.wins, T.trades)}</td>
+          <td className="num" style={{ color: T.gross >= 0 ? UP : DOWN }}>
+            {formatUsd(T.gross)}
+          </td>
+          <td className="num poshist-fee">-${T.fees.toFixed(2)}</td>
+          <td className="num poshist-net" style={{ color: T.pnl >= 0 ? UP : DOWN }}>
+            {formatUsd(T.pnl)}
+          </td>
+          <td className="num dim">{T.liq || ''}</td>
+        </tr>
+      </tfoot>
+    </table>
   );
 }
