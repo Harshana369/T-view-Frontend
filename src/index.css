@@ -1322,3 +1322,41 @@ body {
   font-size: 10px;
   padding: 2px 6px;
 }
+
+/* All coins එකේදී "coins දාන්නේ මොන group එකටද" කියන තේරීම. */
+.wl-target {
+  align-items: center;
+  color: #787b86;
+  display: flex;
+  font-size: 10px;
+  gap: 3px;
+  margin-left: auto;
+  margin-right: 4px;
+}
+
+.wl-target select {
+  background: #1e222d;
+  border: 1px solid #2a2e39;
+  border-radius: 3px;
+  color: #d1d4dc;
+  font-size: 10px;
+  max-width: 120px;
+  padding: 2px 4px;
+}
+
+/* දැනටමත් ඒ group එකේ තියෙන coin එකක්. */
+.wl-remove.wl-in {
+  color: #26a69a;
+}
+
+/* All groups එකතුවේ "clear" — පරණ run ටික අයින් කරන්න. */
+.poshist-clear {
+  background: none;
+  border: 0;
+  color: #787b86;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 400;
+  margin-left: 6px;
+  text-decoration: underline;
+}

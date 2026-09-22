@@ -26,6 +26,10 @@ interface Row {
 /** Win-rate scan එකෙන් හදන group එකේ නම. */
 const WIN_GROUP_NAME = 'Win rate 75%+';
 
+/** All coins බෙදන කෑලි ගාණ — "Group 1" ... "Group 6". */
+const SPLIT_COUNT = 6;
+const splitName = (i: number) => `Group ${i + 1}`;
+
 export function Watchlist() {
   const watchGroups = useStore((s) => s.watchGroups);
   const activeGroupId = useStore((s) => s.activeGroupId);
@@ -49,6 +53,14 @@ export function Watchlist() {
 
   const [adding, setAdding] = useState(false);
   const [managing, setManaging] = useState(false);
+  /**
+   * All coins එකේ ඉඳන් coin එකක් දාද්දී යන group එක.
+   *
+   * කලින් මේක **හැමවිටම `watchGroups[0]`** එකට ගියා (Favorites),
+   * tooltip එකේ වෙන නමක් පෙන්නුවත්. ඒ නිසා Group 5 වගේ එකකට
+   * දාන්න බැරි වුණා. දැන් තෝරන්න පුළුවන්.
+   */
+  const [addTargetId, setAddTargetId] = useState('');
   /** Win-rate scan එකේ තත්ත්වය — null = දුවන්නේ නෑ. */
   const [scanState, setScanState] = useState<string | null>(null);
 
@@ -62,6 +74,50 @@ export function Watchlist() {
    *    ඒක විතරක් බලලා trade කරන්න එපා — profit factor එකයි expectancy
    *    එකයි console එකේ පේනවා.
    */
+  /**
+   * All coins ලැයිස්තුව කෑලි 6කට — "Group 1" ... "Group 6".
+   *
+   * පිළිවෙළ **24h volume අනුව** (ලැයිස්තුව එන විදිහටම), ඒ නිසා
+   * Group 1 = වැඩිම volume තියෙන coins, Group 5 = අඩුම ඒවා. ඒකෙන්
+   * ප්‍රයෝජන දෙකක්:
+   *
+   *   1. Group PNL එක කෑලි වලින් දුවවන්න පුළුවන් — coins 528ම එකවර
+   *      දුවවනවා වෙනුවට. (Rate limit එකටත්, බලාගෙන ඉන්න වෙලාවටත්.)
+   *   2. "Volume වැඩි coins වල strategy එක හොඳට වැඩ කරනවද?" කියන
+   *      ප්‍රශ්නයට group 1 සහ group 5 සංසන්දනය කරලා උත්තරයක්.
+   *
+   * දැනටමත් "Group N" කියලා එකක් තියෙනවා නම් ඒකම නැවත පුරවනවා —
+   * හැම පාරක්ම අලුත් ඒවා හදන්නේ නෑ.
+   */
+  const splitAllCoins = () => {
+    if (all.length === 0) {
+      setScanState('coin list එක තාම එන්නේ නෑ');
+      return;
+    }
+    const symbols = all.map((c) => c.symbol);
+    // කෑලි හැකිතාක් සමානව — ඉතුරු ඒවා මුල් groups වලට.
+    const base = Math.floor(symbols.length / SPLIT_COUNT);
+    const extra = symbols.length % SPLIT_COUNT;
+
+    let cursor = 0;
+    let firstId: string | null = null;
+    const sizes: number[] = [];
+    for (let i = 0; i < SPLIT_COUNT; i++) {
+      const size = base + (i < extra ? 1 : 0);
+      const slice = symbols.slice(cursor, cursor + size);
+      cursor += size;
+      sizes.push(slice.length);
+
+      const name = splitName(i);
+      const existing = watchGroups.find((g) => g.name === name);
+      const id = existing ? existing.id : addGroup(name);
+      setGroupSymbols(id, slice);
+      if (i === 0) firstId = id;
+    }
+    if (firstId) setActiveGroup(firstId);
+    setScanState(`coins ${symbols.length} → ${sizes.join(' / ')}`);
+  };
+
   const scanWinners = async () => {
     setScanState('scanning 528 coins...');
     try {
@@ -107,6 +163,12 @@ export function Watchlist() {
   const [filter, setFilter] = useState('');
 
   const activeGroup = watchGroups.find((g) => g.id === activeGroupId);
+
+  // Group එකක් බලාගෙන ඉඳලා All coins එකට ගියොත්, දාන්න යන්නේ ඒ group
+  // එකටමයි — වෙනම තෝරන්න ඕන නෑ.
+  useEffect(() => {
+    if (activeGroupId !== ALL_GROUP_ID) setAddTargetId(activeGroupId);
+  }, [activeGroupId]);
   const isAll = activeGroupId === ALL_GROUP_ID || !activeGroup;
 
   // Prices — **polling නෑ**. Server එකේ `/ws` එකෙන් push වෙනවා.
@@ -227,13 +289,40 @@ export function Watchlist() {
       .slice(0, 8);
   }, [all, activeGroup, query]);
 
-  /** All coins එකේ ඉඳන් coin එකක් දාද්දී යන group එක. */
-  const addTargetName = activeGroup?.name ?? watchGroups[0]?.name ?? 'Favorites';
+  /**
+   * දාන්න යන group එක — තෝරපු එක, නැත්නම් අන්තිමට බලාගෙන හිටපු එක,
+   * නැත්නම් පළමු එක.
+   */
+  const addTarget =
+    watchGroups.find((g) => g.id === addTargetId) ??
+    watchGroups.find((g) => g.id === activeGroupId) ??
+    watchGroups[0];
+  const addTargetName = addTarget?.name ?? 'Favorites';
+  /** දැනටමත් ඒ group එකේ තියෙන coins — දෙපාරක් දාන්න යන්නේ නෑ. */
+  const inTarget = useMemo(
+    () => new Set(addTarget?.symbols ?? []),
+    [addTarget],
+  );
 
   return (
     <aside className="watchlist">
       <div className="wl-head">
         <span>Watchlist</span>
+        {isAll && watchGroups.length > 0 && (
+          <label className="wl-target" title="Coins දාන්නේ මොන group එකටද">
+            ＋to
+            <select
+              value={addTarget?.id ?? ''}
+              onChange={(e) => setAddTargetId(e.target.value)}
+            >
+              {watchGroups.map((g) => (
+                <option key={g.id} value={g.id}>
+                  {g.name} ({g.symbols.length})
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <button
           type="button"
           className="wl-add"
@@ -286,6 +375,15 @@ export function Watchlist() {
             ⋯
           </button>
         )}
+        <button
+          type="button"
+          className="wl-add"
+          title={`All coins (${all.length}) ${SPLIT_COUNT} කට බෙදනවා — Group 1 ... Group ${SPLIT_COUNT}`}
+          disabled={all.length === 0}
+          onClick={splitAllCoins}
+        >
+          1/{SPLIT_COUNT}
+        </button>
         <button
           type="button"
           className="wl-add"
@@ -413,14 +511,24 @@ export function Watchlist() {
               {isAll ? (
                 <button
                   type="button"
-                  className="wl-remove"
-                  title={`"${addTargetName}" group එකට දාන්න`}
+                  className={inTarget.has(row.symbol) ? 'wl-remove wl-in' : 'wl-remove'}
+                  title={
+                    inTarget.has(row.symbol)
+                      ? `දැනටමත් "${addTargetName}" එකේ — අයින් කරන්න`
+                      : `"${addTargetName}" group එකට දාන්න`
+                  }
                   onClick={(e) => {
                     e.stopPropagation();
-                    addToWatchlist(row.symbol, watchGroups[0]?.id);
+                    if (!addTarget) return;
+                    // දැනටමත් තියෙනවා නම් මේකෙන්ම අයින් කරන්න පුළුවන්.
+                    if (inTarget.has(row.symbol)) {
+                      removeFromWatchlist(row.symbol, addTarget.id);
+                    } else {
+                      addToWatchlist(row.symbol, addTarget.id);
+                    }
                   }}
                 >
-                  +
+                  {inTarget.has(row.symbol) ? '✓' : '+'}
                 </button>
               ) : (
                 <button
